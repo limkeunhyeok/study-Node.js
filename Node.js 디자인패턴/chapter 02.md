@@ -264,3 +264,330 @@ process.on('uncaughtException', (err) => {
 <p>
     Node.js는 캐치되지 않은 예외가 발생하면 프로세스를 종료하기 직전에 uncaughtException이 라는 특수 이벤트를 내보낸다. 위의 코드는 이러한 경우에 사용한다.
 </p>
+
+## 2. 모듈 시스템과 그 패턴
+
+### 2-1 노출식 모듈 패턴
+
+<p>
+    자바스크립트의 주요 문제점 중 하나는 네임스페이스가 없다는 것이다. 전역 범위에서 실행되는 프로그램은 내부 어플리케이션과 종속된 라이브러리 코드의 데이터들로 인해 충돌이 발생할 수 있다. 이러한 문제를 해결하기 위한 보편적인 기법을 노출식 모듈 패턴(revealing module pattern)이라고 한다.
+</p>
+
+```javascript
+const module = (() => {
+    const privateFoo = () => {...};
+    const privateBar = [];
+
+    const exported = {
+        publicFoo: () => {...},
+        publicBar: () => {...}
+    };
+
+    return exported;
+})();
+console.log(module);
+```
+
+<p>
+    위의 패턴 처럼 자기 호출 함수를 사용하여 private 범위를 만들고 공개 될 부분만 export한다. module 변수는 export된 API만 포함하고 있으며, 나머지 모듈 내부 콘텐츠는 실제로 외부에서 액세스할 수 없다.
+</p>
+
+### 2-2 Node.js 모듈 설명
+
+<p>
+    CommonJS는 자바스크립트 생태계를 표준화하려는 목표를 가진 그룹으로, 가장 많이 사용되는 제안 중 하나가 CommonJS 모듈이다. Node.js는 사용자 정의 확장을 추가하여 이 스펙 위에 모듈 시스템을 구축하였다.
+</p>
+
+#### 직접 만드는 모듈 로더
+
+```javascript
+function loadModule(filename, module, require) {
+    const wrappedSrc = `(function(module, exports, require) {
+            ${fs.readFileSync(filename, 'utf8')}
+        })(module, module.exports, require);`;
+    eval(wrappedSrc);
+}
+```
+
+<p>
+    위의 코드는 `require()` 함수의 원래 기능 중 일부를 모방한 함수를 만든 것이며, 먼저 모듈의 내용을 로드하고 이를 private 범위로 감싸 평가하는 함수이다. 모듈의 소스코드는 노출 모듈 패턴과 마찬가지로 기본적으로 함수로 싸여진다. 차이점은 일련의 변수들(module, exports, require)을 모듈에 전달한다는 것이다.
+</p>
+
+```javascript
+// 실제 require() 함수의 내부 동작과 같지는 않음
+
+...
+
+const require = (moduleName) => {
+    console.log(`Require invoked for module: ${moduleName}`);
+    const id = require.resolve(moduleName); // 1.
+    if (require.cache[id]) { // 2.
+        return require.cache[id].exports;
+    }
+    // 모듈 메타데이터
+    const module = { // 3.
+        exports: {},
+        id: id
+    };
+    // 캐시 갱신
+    require.cache[id] = module; // 4.
+    // 모듈 로드
+    loadModule(id, module, require); // 5.
+    // 익스포트된 변수들을 반환
+    return module.exports; // 6.
+};
+
+require.cache = {};
+require.resolve = (moduleName) => {
+    // moduleName에서 모듈 ID를 확인
+};
+```
+
+1. 모듈 이름을 입력으로 받아 수행하는 첫 번째 일은 id라고 부르는 모듈의 전체 경로를 알아내는(resolve) 것이다. 이 작업은 이를 해결하기 위해 관련 알고리즘을 구현하고 있는 `require.resolve()`에 위임된다.
+2. 모듈이 이미 로드된 경우 캐시된 모듈을 사용한다. 이 경우 즉시 반환한다.
+3. 모듈이 아직 로드되지 않은 경우 최초 로드를 위한 환경을 설정한다. 특히, 빈 객체 리터럴을 통해, 초기화된 exports 속성을 가지고 있는 module 객체를 만든다. exports 속성은 불러올 모듈의 코드에서 모든 public API를 익스포트 하는데 사용될 것이다.
+4. module 객체가 캐시된다.
+5. 모듈 소스코드는 해당 파일에서 읽어 오며, 코드는 앞에서 살펴본 방식대로 평가된다. 방금 생성한 module 객체와 require() 함수의 참조를 모듈에 전달한다. 모듈은 module.exports 객체를 조작하거나 대체하여 public API를 내보낸다.
+6. 마지막으로 모듈의 public API를 나타내는 module.exports의 내용이 호출자에게 반환된다.
+
+#### 모듈 정의
+
+```javascript
+// 다른 종속성 로드
+const dependency = require('./anotherModule');
+
+// private 함수
+function log() {
+    console.log(`Well done ${dependency.username}`);
+}
+
+// 익스포트되어 외부에서 사용될 API
+module.exports.run = () => {
+    log();
+}
+```
+
+<p>
+    위의 코드는 모듈을 정의하는 방법으로, `module.exports` 변수에 할당되지 않는 한, 모듈 내부의 모든 항목은 private이다.
+</p>
+
+#### 전역 정의
+
+<p>
+    모듈 시스템은 전역에서 사용할 수 있도록 global이라는 특수 변수를 제공한다. 이 변수에 할당된 모든 항목은 자동으로 전역 범위에 있게 된다.
+</p>
+
+#### module.exports 대 exports
+
+<p>
+    `exports`는 `module.exports`의 초기 값에 대한 참조일 뿐이다. exports가 참조하는 객체에만 새로운 속성을 추가할 수 있다.
+</p>
+
+```javascript
+exports.hello = () => {
+    console.log('Hello');
+}
+```
+
+<p>
+    exports 변수의 재할당은 module.exports의 내용을 변경하지 않기 때문에 아무런 효과가 없으며 exports 변수 자체만을 재할당한다. 함수, 인스턴스 또는 문자열과 같은 객체 리터럴 이외의 것을 내보내려면 module.exports를 다시 할당해야 한다.
+</p>
+
+```javascript
+// 변수 자체만을 재할당하므로 아무런 효과가 없음
+exports = () => {
+    console.log('hello');
+}
+
+// 객체 리터럴 이외의 것을 내보내려면
+module.exports = () => {
+    console.log('hello');
+}
+```
+
+#### require 함수는 동기적이다.
+
+<p>
+    Node.js의 `requre()` 함수는 동기적이다. 따라서 `module.exports`에 대한 할당도 동기적이어야 한다. 이러한 속성은 모듈을 정의하는 방식에 중요한 영향을 미친다. 모듈을 정의할 때는 동기적 코드를 주로 사용하기 때문이다. 실제로 Node.js의 핵심 라이브러리들이 대부분의 Async 라이브러리에 대한 대안으로써 동기 API도 제공하는 가장 중요한 이유다. 원래 Node.js는 비동기 버전의 `require()`를 사용했었다. 하지만 과도한 복잡성으로 인하 곧 제거되었다.
+</p>
+
+#### 해결(resolving) 알고리즘
+
+<p>
+    의존성 지옥(dependency hell)은 소프트웨어의 의존성이 서로 공통된 라이브러리들을 의존하지만 호환되지 않는 서로 다른 버전을 필요로 하는 상황을 나타낸다. Node.js는 모듈이 로드되는 위치에 따라 다른 버전의 모듈을 로드할 수 있도록 하여 이 문제를 해결한다. 이 기능의 장점은 npm뿐 아니라 require 함수에서 사용하는 해결 알고리즘에도 적용된다.
+</p>
+
+<p>
+    `resolve()` 함수는 모듈 이름을 입력으로 사용하여 모듈 전체의 경로를 반환한다. 이 경로는 코드를 로드하고 모듈을 고유하게 식별하는데 사용된다. 해결 알고리즘은 크게 세 가지로 나뉜다.
+</p>
+
+- 파일 모듈: moduleName이 '/'로 시작하면 이미 모듈에 대한 절대 경로라고 간주되어 그대로 반환한다. './'으로 시작하면 moduleName은 상대 경로로 간주되며, 이는 요청한 모듈로부터 시작하여 계산된다.
+- 코어 모듈: moduleName이 '/' 또는 './'로 시작하지 않으면 알고리즘은 먼저 코어 Node.js 모듈 내에서 검색을 시도한다.
+- 패키지 모듈: moduleName과 일치하는 코어 모듈이 없는 경우, 요청 모듈의 경로에서 시작하여 디렉터리 구조를 탐색하여 올라가면서 node_modules 디렉터리를 찾고 그 안에서 일치하는 모듈을 찾는다. 알고리즘은 파일 시스템의 루트에 도달할 때까지 디렉터리 트리를 올라가면서 다음 node_modules 디렉터리를 탐색하여 계속 일치하는 모듈을 찾는다.
+
+<p>
+    파일 및 패키지 모듈의 경우 개별 파일과 디렉터리가 모두 moduleName과 일치할 수 있다. 알고리즘은 다음과 일치하는지 확인한다.
+</p>
+
+- 'MODULENAME'.js
+- 'MODULENAME'/index.js
+- 'MODULENAME'/package.json의 main 속성에 지정된 디렉터리/파일
+
+<p>
+    해결 알고리즘은 Node.js 의존성 관리의 견고성을 뒷받침하는 핵심적인 부분이며, 충돌 혹은 버전 호환성 문제없이 어플리케이션에서 수백 또는 수천 개의 패키지를 가질 수 있게 한다. 해결 알고리즘은 `require()`를 호출할 때 분명하게 적용된다. 그러나 필요하다면 `require.resolve()`를 호출하여 모듈에서 직접 사용될 수 있다.
+</p>
+
+#### 모듈 캐시
+
+<p>
+    `require()`의 후속 호출은 단순히 캐시된 버전을 반환하기 때문에 각 모듈은 처음 로드될 때만 로드되고 평가된다. 캐싱은 성능을 위해 중요하지만 다음과 같은 기능적인 영향도 있다.
+</p>
+
+- 모듈 의존성 내에서 순환을 가질 수 있다.
+- 일정한 패키지 내에서 동일한 모듈이 필요할 때는 어느 정도 동일한 인스턴스가 항상 반환되는 것을 보장한다.
+
+### 2-3 모듈 정의 패턴
+
+<p>
+    모듈 시스템은 API를 정의하기 위한 도구이기도 하다. API 디자인과 관련된 고려해야 할 주요 요소는 private 함수와 public 함수 간의 균형이다. 이것의 목표는 확장성과 코드 재사용같은 소프트웨어 품질과의 균형을 유지하면서 정보 은닉 및 API 유용성을 극대화하는 것이다.
+</p>
+
+#### exports 지정하기(named exports)
+
+<p>
+    public API를 공개하는 가장 기본적인 방법은 exports로 명기하는 것으로, exports에서 참조하는 객체의 속성에 공개할 모든 값을 할당하는 것이다. Node.js의 코어 모듈 대부분은 아래와 같은 패턴을 사용한다.
+</p>
+
+```javascript
+// logger.js
+exports.info = (message) => {
+    console.log('info: ' + message);
+};
+
+exports.verbose = (message) => {
+    console.log('verbose: ' + message);
+};
+
+...
+
+// main.js
+const logger = require('./logger');
+logger.info('This is an informational message');
+logger.verbose('This is a verbose message');
+```
+
+#### 함수 내보내기(Exporting a funcion)
+
+<p>
+    가장 일반적인 모듈 정의 패턴 중 하나가 `module.exports` 변수 전체를 함수에 재할당하는 것이다. 주요 장점은 모듈에 대한 명확한 진입점을 제공하는 단일 기능을 제공하여 그것에 대한 이해와 사용을 단순화한다는 것이다. 또한 최소한의 노출이라는 원리에 잘 맞아 떨어진다.
+</p>
+
+```javascript
+// logger.js
+module.exports = (message) => {
+    console.log(`info: ${message}`);
+};
+
+module.exports.verbose = (message) => {
+    console.log(`verbose: ${message}`);
+};
+
+...
+
+// main.js
+const logger = require('./logger');
+logger('This is an informational message');
+logger.verbose('This is a verbose message');
+```
+
+<p>
+    단순히 함수를 내보내는 것이 제약처럼 보일 수도 있지만 단일 기능에 중점을 두도록 하는 완벽한 방법이며, 내부 형태에 대한 가시성을 줄이면서 이외 보조적인 사항들은 익스포트된 함수의 속성으로 노출하여 단일 진입점을 제공한다. Node.js의 모듈성은 한 가지만 책임지는 원칙(Single Responsibility Principle)을 지키는 것을 권장한다. 모든 모듈은 단일 기능에 대한 책임을 져야 하며, 책임은 모듈에 의해 완전히 캡슐화되어야 한다.
+</p>
+
+#### 생성자 익스포트하기
+
+<p>
+    생성자를 익스포트하는 모듈은 함수를 내보내는 모듈이 특화된 것이다. 차이점은 이 새로운 패턴을 통해 사용자에게 생성자를 사용하여 새 인스턴스를 만들 수 있게 하면서, 프로토타입을 확장하고 새로운 클래스를 만들 수 있는 기능도 제공할 수 있다는 것이다.
+</p>
+
+```javascript
+// logger.js
+function Logger(name) {
+    this.name = name;
+}
+
+Logger.prototype.log = function(message) {
+    console.log(`[${this.name}] ${message}`);
+};
+
+Logger.prototype.info = function(message) {
+    this.log(`info: ${message}`);
+};
+
+Logger.prototype.verbose = function(message) {
+    this.log(`verbose: ${message}`);
+};
+
+module.exports = Logger;
+
+...
+
+// main.js
+const Logger = require('./logger');
+const dbLogger = new Logger('DB');
+dbLogger.info('This is an informational message');
+const accessLogger = new Logger('ACCESS');
+accessLogger.verbose('This is a verbose message');
+```
+
+<p>
+    위의 패턴은 ES2015의 클래스로 나타낼 수 있다. 생성자나 클래스를 내보내는 것은 모듈에 대한 단일 진입점을 제공하지만 substack 패턴과 비교할 때 훨씬 더 많은 모듈의 내부를 노출한다. 또한 기능 확장에 있어 훨씬 더 강력할 수 있다. 이 패턴의 변형은 new 명령을 사용하지 않는 호출에 대해 보호자(guard)를 적용하는 것으로 구성되며, 이 트릭으로 모듈을 팩토리로 사용할 수 있다.
+</p>
+
+#### 인스턴스 익스포트 하기
+
+```javascript
+// logger.js
+function Logger(name) {
+    this.count = 0;
+    this.name = name;
+}
+
+Logger.prototype.log = function(message) {
+    this.count++;
+    console.log(`[${this.name}] ${message}`);
+}
+
+module.exports = new Logger('DEFAULT');
+
+...
+
+// main.js
+const logger = require('./logger');
+logger.log('This is an informational message');
+```
+
+<p>
+    `require()` 함수는 캐싱 메커니즘을 이용하여 생성자나 팩토리를 통해 모듈을 생성하므로 서로 다른 모듈 간에 공유할 수 있는 상태 저장(stateful) 인스턴스를 쉽게 정의할 수 있다.
+</p>
+
+<p>
+    이러한 패턴의 확장은 인스턴스 자체뿐만 아니라 인스턴스를 생성하는데 사용되는 생성자를 노출하는 것으로 구성된다. 이를 통해 사용자는 동일한 객체의 새 인스턴스를 만들거나 필요에 따라 확장할 수도 있다.
+</p>
+
+```javascript
+...
+
+module.exports.Logger = Logger;
+
+...
+
+const customLogger = new logger.Logger('CUSTOM');
+customLogger.log('This is an informational message');
+```
+
+#### 다른 모듈 혹은 글로벌 스코프 수정
+
+<p>
+    모듈이 캐시에 있는 다른 모듈을 포함하여 전역 범위와 그 안에 있는 모든 개체를 수정할 수 있다(몽키 패치라고도 한다). 일반적으로 권장되지는 않지만, 일부 상황(예: 테스트용)에서 유용하고 안전하다.
+</p>
