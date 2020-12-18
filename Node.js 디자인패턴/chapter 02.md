@@ -591,3 +591,203 @@ customLogger.log('This is an informational message');
 <p>
     모듈이 캐시에 있는 다른 모듈을 포함하여 전역 범위와 그 안에 있는 모든 개체를 수정할 수 있다(몽키 패치라고도 한다). 일반적으로 권장되지는 않지만, 일부 상황(예: 테스트용)에서 유용하고 안전하다.
 </p>
+
+## 3. 관찰자 패턴(The observer pattern)
+
+<p>
+    관찰자 패턴은 Node.js의 반응적인(reactive) 특성을 모델링하고 콜백을 완벽하게 보완하는 이상적인 해결책이다. 또한 관찰자 패턴은 상태 변화가 일어날 때 관찰자(또는 listener)에게 알릴 수 있는 객체(Subject라고 불림)를 정의하는 것이다. 콜백과의 차이점은 여러 관찰자에게 알릴 수 있다는 점이다.
+</p>
+
+### 3-1 EventEmitter 클래스
+
+![1](https://user-images.githubusercontent.com/38815618/102628743-860b1700-418d-11eb-9514-193719fbf15c.PNG)
+
+<p>
+    관찰자 패턴은 이미 코어에 내장되어 있으며 EventEmitter 클래스를 통해 사용할 수 있다. EventEmitter 클래스를 사용하여 특정 유형의 이벤트가 발생되면 호출될 하나 이상의 함수를 Listener로 등록할 수 있다.
+</p>
+
+```javascript
+const EventEmitter = require('events').EventEmitter;
+const eeInstance = new EventEmitter();
+```
+
+<p>
+    EventEmitter는 프로토타입이며 코어 모듈로부터 익스포트된다. EventEmitter의 필수 메소드는 다음과 같다.
+</p>
+
+- on(event, listener): 이 메소드를 사용하면 주어진 이벤트 유형(문자열)에 대해 새로운 listener를 등록할 수 있다.
+- once(event, listener): 이 메소드는 첫 이벤트가 전달된 후 제거되는 새로운 listener를 등록한다.
+- emit(event, [arg1], [...]): 이 메소드는 새 이벤트를 생성하고 listener에게 전달할 추가적인 인자들을 지원한다.
+- removeListener(event, listener): 이 메소드는 지정된 이벤트 유형에 대한 listener를 제거한다.
+
+### 3-2 EventEmitter 생성 및 사용
+
+```javascript
+const EventEmitter = require('events').EventEmitter;
+const fs = require('fs');
+
+function findPattern(files, regex) {
+    const emitter = new EventEmitter();
+    files.forEach(function(file) {
+        fs.readFile(file, 'utf8', (err, content) => {
+            if (err) {
+                return emitter.emit('error', err);
+            }
+            emitter.emit('fileread', file);
+            let match;
+            if (match = content.match(regex)) {
+                match.forEach(elem => emitter.emit('found', file, elem));
+            }
+        });
+    });
+    return emitter;
+}
+```
+
+<p>
+    위의 함수는 EventEmitter를 사용하여 파일 목록에서 특정 패턴이 발견되면 실시간으로 구독자들에게 알리는 함수이다. 해당 함수는 다음 세 가지 이벤트를 발생시킨다.
+</p>
+
+- fileread: 파일을 읽을 때 발생한다.
+- found: 일치하는 항목이 발견되었을 때 발생한다.
+- error: 파일을 읽는 동안 오류가 발생했을 때 발생한다.
+
+<p>
+    findPattern은 아래의 코드와 같이 사용할 수 있으며, 출력 결과를 확인하기 위해 fileA.txt를 생성하고 hello world를 추가한다.
+</p>
+
+```javascript
+findPattern(
+    ['fileA.txt', 'fileB.json'],
+    /hello \w+/g
+)
+.on('fileread', file => console.log(file + ' was read'))
+.on('found', (file, match) => console.log('Matched "' + match + '" in file ' + file))
+.on('error', err => console.log('Error emitted: ' + err.message));
+
+// 출력 결과
+// Error emitted: ENOENT: no such file or directory, open 'D:\Dropbox\임근혁\수업자료\study\study Node.js\Node.js 디자인패턴\fileB.json'
+// fileA.txt was read
+// Matched "hello world" in file fileA.txt
+```
+
+### 3-3 오류 전파
+
+<p>
+    EventEmitter는 이벤트가 비동기적으로 발생할 경우, 이벤트 루프에서 손실될 수 있기 때문에 콜백에서와 같이 예외를 바로 throw할 수 없다. 대신, error라는 특수한 이벤트를 발생시키고, Error 객체를 인자로 전달한다.
+</p>
+
+### 3-4 관찰 가능한 객체 만들기
+
+<p>
+    때로는 EventEmitter 클래스를 가지고 직접 새로운 관찰 대상 객체를 만드는 것만으로는 충분하지 않을 수도 있다. 이런 방식으로 단순한 새로운 이벤트를 만드는 것 이상의 기능을 제공하는 것은 비현실적이다. 실제로 일반적인 객체를 관찰 가능하게 만드는 것이 일반적이다. 이것은 EventEmitter 클래스를 확장함으로써 가능하다.
+</p>
+
+```javascript
+onst EventEmitter = require('events').EventEmitter;
+const fs = require('fs');
+
+class FindPattern extends EventEmitter {
+    constructor (regex) {
+        super();
+        this.regex = regex;
+        this.files = [];
+    }
+
+    addFile (file) {
+        this.files.push(file);
+        return this;
+    }
+
+    find () {
+        this.files.forEach( file => {
+            fs.readFile(file, 'utf8', (err, content) => {
+                if (err) {
+                    return this.emit('error', err);
+                }
+
+                this.emit('fileread', file);
+
+                let match = null;
+                if (match = content.match(this.regex)) {
+                    match.forEach(elem => this.emit('found', file, elem));
+                }
+            });
+        });
+        return this;
+    }
+}
+
+const findPatternObject = new FindPattern(/hello \w+/);
+findPatternObject
+    .addFile('fileA.txt')
+    .addFile('fileB.json')
+    .find()
+    .on('found', (file, match) => console.log(`Matched "${match}" in file ${file}`))
+    .on('error', err => console.log(`Error emitted ${err.message}`))
+    .on('fileread', file => console.log(`${file} was read`));
+
+// Error emitted ENOENT: no such file or directory, open 'D:\Dropbox\임근혁\수업자료\study\study Node.js\Node.js 디자인패턴\fileB.json'
+// fileA.txt was read
+// Matched "hello world" in file fileA.txt
+```
+
+### 3-5 동기 및 비동기 이벤트
+
+<p>
+    동기 이벤트와 비동기 이벤트를 발생시키는 주된 차이점은 리스너를 등록할 수 있는 방법에 있다. 이벤트가 비동기적으로 발생하면 EventEmitter가 초기화된 후에도 프로그램은 새로운 리스너를 등록할 수 있다. 이벤트가 이벤트 루프의 다음 사이클이 될 때까지는 실행되지 않을 것이기 때문이다. 반대로 이벤트를 동기적으로 발생시키려면 EventEmitter 함수가 이벤트를 방출하기 전에 모든 리스너가 등록되어 있어야 한다.
+</p>
+
+```javascript
+const EventEmitter = require('events').EventEmitter;
+
+class SyncEmit extends EventEmitter {
+    constructor() {
+        super();
+        this.emit('ready');
+    }
+}
+
+const syncEmit = new SyncEmit();
+syncEmit.on('ready', () => console.log('Object is ready to be used'));
+```
+
+<p>
+    위의 코드에서 ready 이벤트가 비동기적으로 발생한다면 완벽하게 동작한다. 하지만 동기적으로 생성되면 이벤트가 이미 전송된 후 리스너가 등록되므로 결과적으로 리스너가 호출되지 않는다. 따라서 코드는 아무 것도 출력하지 않는다.
+</p>
+
+### 3-6 EventEmitter vs 콜백
+
+<p>
+    결과가 비동기 방식으로 반환되어야 하는 경우 콜백을 사용한다. 대신 이벤트는 일어난 무엇인가를 전달할 필요가 있을 때 사용한다. 하지만 두 패러다임이 대부분 동등하고 동일한 결과를 얻을 수 있어 혼란이 발생한다.
+</p>
+
+```javascript
+function helloEvents() {
+    const eventEmitter = new EventEmitter();
+    setTimeout(() => eventEmitter.emit('hello', 'hello world'), 100);
+    return eventEmitter;
+}
+
+function helloCallback(callback) {
+    setTimeout(() => callback('hello world'), 100);
+}
+```
+
+<p>
+    위 코드에서 두 함수는 기능면으로 동일하며, 두 함수를 구별하는 것은 가독성, 의미, 구현 또는 사용되는데 필요한 코드의 양이다.
+</p>
+
+<p>
+    EventEmitter가 더 좋은 경우는 동일한 이벤트가 여러 번 발생할 수도 있고, 전혀 발생하지 않을 수도 있는 경우이다. 콜백은 작업의 성공 여부와 상관없이 정확히 한 번 호출되어야 한다. 반복적인 상황에 놓인다면 사건의 발생이라는 의미의 본질에 생각해야 하며, 이 경우는 결과보다는 정보가 전달되어야 하는 이벤트에 더 가깝고, EventEmitter가 좋은 선택이다.
+</p>
+
+### 3-7 콜백과 EventEmitter의 결합
+
+<p>
+    이 패턴은 메인 함수로 전통적인 비동기 함수를 익스포트하여 최소한의 인터페이스라는 원칙을 지키면서도 EventEmitter를 반환하여 더 풍부한 기능과 제어를 제공하고자 할 때 매우 유용하다. 이 패턴의 예로 glob 스타일 파일 검색 라이브러리인 node-glob 모듈이 있다. 함수는 패턴과 옵션 그리고 인자로 주어진 패턴과 일치하는 모든 파일의 리스트를 가지고 호출될 콜백 함수를 취한다. 동시에 이 함수는 프로세스 상태에 대해 보다 세분화된 알림을 제공하는 EventEmitter를 반환한다. 예를 들어 end 이벤트가 일어날 때, 모든 일치된 파일 목록들을 얻기 위해 match 이벤트가 일어날 때마다 실시간으로 알림을 받거나 abort 이벤트 수신을 통해 수동으로 프로세스가 중단되었는지 여부를 알 수 있다.
+</p>
+
+<p>
+    콜백을 받아들이고 EventEmitter를 반환하는 함수를 만듦으로써, EventEmitter를 통해 보다 세분화된 이벤트를 방출하면서 주요 기능에 대한 간단하고 명확한 진입점을 제공할 수 있다.
+</p>

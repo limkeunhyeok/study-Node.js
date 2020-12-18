@@ -1,5 +1,11 @@
-const logger = require('./logger');
-logger.log('This is an informational message');
+const EventEmitter = require('events').EventEmitter;
 
-const customLogger = new logger.Logger('CUSTOM');
-customLogger.log('This is an informational message');
+class SyncEmit extends EventEmitter {
+    constructor() {
+        super();
+        this.emit('ready');
+    }
+}
+
+const syncEmit = new SyncEmit();
+syncEmit.on('ready', () => console.log('Object is ready to be used'));
