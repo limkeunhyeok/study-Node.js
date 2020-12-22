@@ -592,3 +592,139 @@ function spiderLinks(currentUrl, body, nesting, callback) {
 - 사용자 정의 콜백을 제공하여 `spider()` 함수를 실행한다.
 - 콜백에서 `spiderLinks()` 함수 실행과 관련된 모든 작업이 완료되었는지 확인한다. 이 조건이 true면 `spiderLinks()` 함수의 최종 콜백을 호출한다.
 - 작업이 끝나면 queue가 실행을 꼐속 할 수 있도록 `done()` 콜백을 호출한다.
+
+## 3. Async 라이브러리
+
+<p>
+    Async 라이브러리는 Node.js와 자바스크립트에서 일반적으로 사용되는 비동기 코드 처리 솔루션이다. 다양한 환경에서 일련의 작업 실행을 크게 단순화하는 일련의 함수들을 제공하며, 컬렉션을 비동기적으로 처리할 수 있는 유용한 헬퍼들을 제공한다.
+</p>
+
+### 3-1 순차 실행
+
+#### 알려진 일련의 작업을 순차적으로 실행하기
+
+- `download()` 함수의 세 가지 작업
+  - URL의 내용을 다운로드 한다.
+  - 아직 존재하지 않는 경우 새 디렉터리를 만든다.
+  - URL의 내용을 파일에 저장한다.
+
+<p>
+    async의 장점은 Node.js와 동일한 콜백 규칙을 사용하며 오류 전파를 자동으로 처리한다는 점이다. 따라서 어떤 task라도 오류를 가지고 콜백을 호출하면, async는 나머지 작업 목록을 건너 뛰고 최종 콜백으로 바로 이동한다.
+</p>
+
+```javascript
+function download(url, filename, callback) {
+    console.log(`Downloading ${url}`);
+    let body;
+
+    async.series([
+        callback => { // 1.
+            request(url, (err, response, resBody) => {
+                if (err) {
+                    return callback(err);
+                }
+                body = resBody;
+                callback();
+            });
+        },
+        mkdirp.bind(null, path.dirname(filename)), // 2.
+        callback => { // 3.
+            fs.writeFile(filename, body, callback);
+        }
+    ], err => {
+        if (err) { // 4.
+            return callback(err);
+        }
+        console.log(`Downloaded and saved: ${url}`);
+        callback(null, body);
+    });
+}
+```
+
+1. 첫 번째 작업은 URL을 다운로드하는 것이다. 여기서 다른 작업들과 공유할 수 있도록 response 본문을 클로저 변수에 저장한다.
+2. 두 번째 작업에서는 다운로드한 페이지를 저장할 디렉터리를 만든다. 이를 위해 생성할 디렉터리의 경로에 바인딩하는 `mkdirp()` 함수의 인자로 다른 함수 실행 결과를 전달하는 기법(파티셜 어플리케이션)을 사용하였다. 이렇게 하면 코드를 줄이면서 가독성을 높일 수 있다.
+3. 마지막으로 다운로드한 URL의 내용을 파일에 쓴다. 이 경우에는 두 번째 작업에서와 같은 파티셜 어플리케이션 기법을 사용하지 않았다. 일련의 순차 실행에 있어서  body 변수가 첫 번째 작업이 완료되어야 사용 가능하기 때문이다. 그러나 간단하게 `fs.writeFile()` 함수에 직접적으로 작업의 콜백을 전달하여 async의 자동 에러 관리를 활용함으로써 약간의 코드를 더 줄일 수 있다.
+4. 모든 작업이 완료되면 `async.series()`의 최종 콜백이 호출된다. 여기서는 간단하게 에러를 처리하고 body 변수를 `download()` 함수의 콜백에 반환한다.
+
+<p>
+    `async.series()` 대신 사용할 수 있는 것은 `async.waterfull()`이다. 해당 메서드는 순차적으로 일련의 작업들을 실행하지만 각 작업의 결과를 다음 작업의 입력으로 전달한다.
+</p>
+
+#### 순차 반복
+
+```javascript
+function spiderLinks(currentUrl, body, nesting, callback) {
+    if (nesting === 0) {
+        return process.nextTick(callback);
+    }
+
+    const links = utilities.getPageLinks(currentUrl, body);
+    if (links.length === 0) {
+        return process.nextTick(callback);
+    }
+
+    async.eachSeries(links, (link, callback) => {
+        spider(link, nesting - 1, callback);
+    }, callback);
+}
+```
+
+### 3-2 병렬 실행
+
+<p>
+    Async 라이브러리는 병렬 흐름 관리를 위한 함수로 `each()`, `map()`, `filter()`, `reject()`, `detect()`, `some()`, `every()`, `concat()`, `parallel()`, `applyEach()`, `times()` 같은 함수를 제공하며, 제공하는 작업이 병렬로 실행된다는 차이점을 제외하면 순차 실행과 비교해 이미 본 기능들과 동일한 로직을 따른다.
+</p>
+
+```javascript
+function spiderLinks(currentUrl, body, nesting, callback) {
+    // ...
+    async.each(links, (link, callback) => {
+        spider(link, nesting - 1, callback);
+    }, callback);
+}
+```
+
+<p>
+    위의 코드는 기존의 `async.eachSeries()` 대신 `async.each()`를 사용한 것 외에 동일한 로직을 가진다. 코드는 특정 실행 흐름에 얽매이지 않으며, 이를 위해 특별히 코드를 작성하지 않아도 되는 장점을 가진다.
+</p>
+
+### 3-3 제한된 병렬 실행
+
+<p>
+    Async 라이브러리에서 병렬 작업의 동시 실행을 제한하는 함수로 `eachLimit()`, `mapLimit()`, `parallelLimit()`, `queue()`, `cargo()` 같은 함수가 있다.
+</p>
+
+```javascript
+const downloadQueue = async.queue((taskData, callback) => {
+    spider(taskData.link, taskData.nesting - 1, callback);
+}, 2);
+
+function spiderLinks(currentUrl, body, nesting, callback) {
+    if (nesting === 0) {
+        return process.nextTick(callback);
+    }
+    
+    const links = utilities.getPageLinks(currentUrl, body);
+    if (links.length === 0) {
+        return process.nextTick(callback);
+    }
+
+    const completed = 0, hasErrors = false;
+    links.forEach(function(link) {
+        const taskData = {link: link, nesting: nesting};
+        downloadQueue.push(taskData, err => {
+            if (err) {
+                hasErrors = true;
+                return callback(err);
+            }
+            if (++completed === links.length && !hasErrors) {
+                callback();
+            }
+        });
+    });
+}
+```
+
+<p>
+    위의 코드도 기존의 코드와 비슷하며, 새로운 task를 queue에 넣는다.이 때 현재 페이지에 대한 모든 다운로드 작업이 완료되었는지 확인하여 최종 콜백을 호출하는 콜백을 전달한다.
+</p>
