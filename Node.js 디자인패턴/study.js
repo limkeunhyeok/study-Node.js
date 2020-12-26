@@ -1,11 +1,17 @@
-const EventEmitter = require('events').EventEmitter;
+module.exports = function asyncDivision (dividend, divisor, cb) {
+  return new Promise((resolve, reject) => {  // [1]
 
-class SyncEmit extends EventEmitter {
-    constructor() {
-        super();
-        this.emit('ready');
-    }
-}
+    process.nextTick(() => {
+      const result = dividend / divisor;
+      if (isNaN(result) || !Number.isFinite(result)) {
+        const error = new Error('Invalid operands');
+        if (cb) { cb(error); }  // [2]
+        return reject(error);
+      }
 
-const syncEmit = new SyncEmit();
-syncEmit.on('ready', () => console.log('Object is ready to be used'));
+      if (cb) { cb(null, result); }  // [3]
+      resolve(result);
+    });
+
+  });
+};
