@@ -330,3 +330,41 @@ asyncFlowWithThunks(function* () {
 - 가장 인기있는 웹 프레임워크인 koa
 - 특정 제어 흐름 패턴을 구현한 라이브러리
 - co를 지원하기 위해 널리 사용되는 API를 랩핑한 라이브러리
+
+## 3. Babel을 사용한 async await
+
+<p>
+    제너레이터 함수는 주로 반복자를 처리하도록 설계되었기 때문에 비동기 코드로 사용하는 것이 약간 번거롭고, 이해하기 어려우며, 가독성과 유지보수가 어려운 코드가 될 수 있다. 이에 ECMAScript 2017에서 async와 await라는 두 키워드를 도입하였다.
+</p>
+
+```javascript
+const request = require('request');
+
+function getPageHtml(url) {
+    return new Promise(function(resolve, reject) {
+        request(url, function(error, response, body) {
+            resolve(body);
+        });
+    });
+}
+
+async function main() {
+    const html = await getPageHtml('http://google.com');
+    console.log(html);
+}
+
+main();
+console.log('Loading...');
+```
+
+<p>
+    위 코드에서 URL을 사용하여 원격 웹 페이지의 HTML 코드를 가져오는 `getPageHtml()` 함수와 이를 실행하는, async와 await를 사용한 `main()` 함수가 있다. `getPageHtml()`를 호출하기 전에 await를 사용하면 자바스크립트 인터프리터가 `getPageHtml()`에서 반환한 프라미스의 처리를 기다리면서 다음 명령을 계속 진행한다. 이에 `main()` 함수는 프로그램의 나머지 부분의 실행을 차단하지 않고 비동기 코드가 완료될 때까지 내부적으로 일시 중지된다. 따라서 위의 결과로 'Loading...'이라는 콜솔을 띄운 뒤, google HTML 코드가 표시된다.
+</p>
+
+<p>
+    Babel은 문법 변환기로 옛 코드를 최신 구문으로 변환해준다.
+</p>
+
+## 4. 비교
+
+![1](https://user-images.githubusercontent.com/38815618/103296045-95654c80-4a38-11eb-9280-725233ca9454.PNG)
