@@ -78,22 +78,22 @@ asyncOperation(arg)
 
 ```javascript
 module.exports.promisify = function(callbackBasedApi) {
-  return function promisified() {
-    const args = [].slice.call(arguments);
-    return new Promise((resolve, reject) => {    //[1]
-      args.push((err, result) => {      //[2]
-        if(err) {
-          return reject(err);          //[3]
-        }
-        if(arguments.length <= 2) {        //[4]
-          resolve(result);
-        } else {
-          resolve([].slice.call(arguments, 1));
-        }
-      });
-      callbackBasedApi.apply(null, args);      //[5]
-    });
-  }
+    return function promisified() {
+        const args = [].slice.call(arguments);
+        return new Promise((resolve, reject) => {    //[1]
+            args.push((err, result) => {      //[2]
+                if(err) {
+                    return reject(err);          //[3]
+                }
+                if(arguments.length <= 2) {        //[4]
+                    resolve(result);
+                } else {
+                    resolve([].slice.call(arguments, 1));
+                }
+            });
+            callbackBasedApi.apply(null, args);      //[5]
+        });
+    }
 };
 ```
 
@@ -116,21 +116,21 @@ module.exports.promisify = function(callbackBasedApi) {
 ```javascript
 // 나눗셈을 비동기적으로 실행하는 모듈
 module.exports = function asyncDivision (dividend, divisor, cb) {
-  return new Promise((resolve, reject) => {  // [1]
+    return new Promise((resolve, reject) => {  // [1]
 
-    process.nextTick(() => {
-      const result = dividend / divisor;
-      if (isNaN(result) || !Number.isFinite(result)) {
-        const error = new Error('Invalid operands');
-        if (cb) { cb(error); }  // [2]
-        return reject(error);
-      }
+        process.nextTick(() => {
+            const result = dividend / divisor;
+            if (isNaN(result) || !Number.isFinite(result)) {
+                const error = new Error('Invalid operands');
+                if (cb) { cb(error); }  // [2]
+                return reject(error);
+            }
 
-      if (cb) { cb(null, result); }  // [3]
-      resolve(result);
+            if (cb) { cb(null, result); }  // [3]
+            resolve(result);
+        });
+
     });
-
-  });
 };
 
 // test.js
@@ -138,19 +138,195 @@ var asyncDivision = require('./index.js');
 
 // callback oriented usage
 asyncDivision(10, 2, (error, result) => {
-  if (error) {
-    return console.error(error);
-  }
-  console.log(result);
+    if (error) {
+        return console.error(error);
+    }
+    console.log(result);
 });
 
 // promise oriented usage
 asyncDivision(22, 11)
-  .then(result => console.log(result))
-  .catch(error => console.error(error))
+    .then(result => console.log(result))
+    .catch(error => console.error(error))
 ;
 ```
 
 1. Promise 생성자를 사용하여 생성된 새로운 프라미스를 반환하고 있다. 위의 코드는 생성자에 인자로 전달된 함수의 내부에 전체 로직을 정의하였다.
 2. 오류 발생 시 프라미스를 거부하지만, 호출 시 콜백이 전달되었을 경우에는 콜백을 실행하여 에러를 전파한다.
 3. 결과를 계산한 후에 프라미스를 결정하지만, 이 때도 콜백이 존재하면 그 결과를 콜백에도 전달한다.
+
+## 2. 제너레이터(Generator)
+
+### 2-1 제너레이터의 기본
+
+<p>
+    제너레이터 함수는 function 키워드 다음에 *(별표) 연산자를 추가하여 선언할 수 있다. 제너레이터 함수 내 yield 키워드는 실행을 일시 중지하고 전달된 값을 호출자에게 반환할 수 있다. 제너레이터 객체의 next 메소드는 제너레이터의 실행을 시작/재시작하는데 사용되며 value(생성한 값)와 done(실행이 완료되었는지 나타내는 플래그) 값을 가진 객체를 반환한다.
+</p>
+
+#### 간단한 예시
+
+```javascript
+function* fruitGenerator() {
+    yield 'apple';
+    yield 'orange';
+    return 'watermelon';
+}
+
+const newFruitGenerator = fruitGenerator();
+console.log(newFruitGenerator.next()); // 1. { value: 'apple', done: false }
+console.log(newFruitGenerator.next()); // 2. { value: 'orange', done: false }
+console.log(newFruitGenerator.next()); // 3. { value: 'watermelon', done: true }
+```
+
+1. `newFruitGenerator.next()`가 처음으로 호출되었을 때, 제너레이터는 첫 번째 yield 명령에 도달할 때까지 실행을 계속한다. 이 명령은 제너레이터를 일시 중지시키고 값 apple을 호출자에게 반환한다.
+2. `newFruitGenerator.next()`를 두 번째 호출하면 제너레이터는 두 번째 yield 명령에서 실행을 시작하여 다시 실행을 일시 중지하고 orange 값을 호출자에게 반환한다.
+3. `newFruitGenerator.next()`의 마지막 호출은 제너레이터의 마지막 명령으로 제너레이터를 끝내는 return 문에서 재시작하여 value를 watermelon으로 설정하고 done을 true로 설정하여 반환한다.
+
+#### 반복자(Iterator)로서의 제너레이터
+
+```javascript
+function* iteratorGenerator(arr) {
+    for(let i = 0; i < arr.length; i++) {
+        yield arr[i];
+    }
+}
+
+const iterator = iteratorGenerator(['apple', 'orange', 'watermelon']);
+let currentItem = iterator.next();
+while(!currentItem.done) {
+    console.log(currentItem.value);
+    currentItem = iterator.next();
+}
+```
+
+<p>
+    위 코드에서 `iterator.next()`를 호출할 때마다 제너레이터의 for 루프를 다시 시작한다. 이것은 배열의 다음 항목을 반환(yielding)하는 다음 사이클을 실행하며, 호출될 때마다 제너레이터의 내부 상태가 유지되는 모습을 보여준다. 루프가 다시 시작될 때 모든 변수들의 상태는 실행이 일시 중지되었을 때와 완전히 동일하다.
+</p>
+
+#### 값을 제너레이터로 전달하기
+
+```javascript
+function* twoWayGenerator(arr) {
+    const what = yield null;
+    console.log('Hello ' + what);
+}
+
+const twoWay = twoWayGenerator();
+twoWay.next();
+twoWay.next('world'); // Hello world
+```
+
+1. `next()` 메소드가 처음 호출되면 제너레이터는 첫 번째 yield 문에 도달한 다음, 일시 중지 상태가 된다.
+2. `next('world')`가 호출되면 제너레이터는 yield 명령에 있는 일시 중지 지점에서 다시 시작되지만, 이번에는 제너레이터로 전달되는 값을 갖고 있다. 이 값은 what 변수에 설정된다. 제너레이터는 `console.log()` 명령을 실행하고 종료한다.
+
+```javascript
+const twoWay = twoWayGenerator();
+twoWay.next();
+twoWay.throw(new Error());
+```
+
+<p>
+    throw 메소드를 통해 예외를 던질 수 있도록 강제할 수 있다. 이 예외는 제너레이터 내부에서 예외가 발생하는 것과 똑같이 작동하며, 이는 `try ... catch` 블록을 사용한 다른 exception들처럼 catch할 수 있고 처리할 수 있다.
+</p>
+
+### 2-2 제너레이터를 사용한 비동기 제어 흐름
+
+```javascript
+// 자기 자신의 복사본을 만드는 clone.js
+"use strict";
+
+const fs = require('fs');
+const path = require('path');
+
+function asyncFlow(generatorFunction) {
+    function callback(err) {
+        if (err) {
+            return generator.throw(err);
+        }
+        const results = [].slice.call(arguments, 1);
+        generator.next(results.length > 1 ? results : results[0]);
+    }
+    const generator = generatorFunction(callback);
+    generator.next();
+}
+
+asyncFlow(function* (callback) {
+    const fileName = path.basename(__filename);
+    const myself = yield fs.readFile(fileName, 'utf8', callback);
+    yield fs.writeFile(`clone_of_${fileName}`, myself, callback);
+    console.log('Clone created');
+});
+```
+
+<p>
+    `asyncFlow()` 함수는 제너레이터를 입력으로 받아 callback과 함께 인스턴스화 한 다음, 즉시 실행을 시작한다. 인자로 받은 `generatorFunction()`는 특별한 callback을 인자로 받는데, callback은 오류가 수신되면 `generator.throw()`를 호출하고, 그렇지 않으면 콜백 함수가 받은 결과를 다시 인자로 전달하여 제너레이터의 실행을 재개한다.
+</p>
+
+<p>
+    제너레이터를 이용한 순차적 접근 비동기 코드 작성 방식에는 yield를 지정하여 반환받을 수 잇는 객체의 유형으로 프라미스를 사용하는 것과 썽크(thunk)를 사용하는 두 가지 변형된 기술이 있다.
+</p>
+
+```javascript
+"use strict";
+
+const fs = require('fs');
+const path = require('path');
+
+function asyncFlowWithThunks(generatorFunction) {
+    function callback(err) {
+        if (err) {
+            return generator.throw(err); 
+        }
+        const results = [].slice.call(arguments, 1);
+        const thunk = generator.next(results.length > 1 ? results : results[0]).value;
+        thunk && thunk(callback);
+    }
+    const generator = generatorFunction();
+    const thunk = generator.next().value;
+    thunk && thunk(callback);
+}
+
+const readFileThunk = (filename, options) => {
+    return (cb) => {
+        fs.readFile(filename, options, cb);
+    }
+};
+
+const writeFileThunk = (filename, options) => {
+    return (cb) => {
+        fs.writeFile(filename, options, cb);
+    }
+};
+
+asyncFlowWithThunks(function* () {
+    const fileName = path.basename(__filename);
+    const myself = yield readFileThunk(fileName, 'utf8');
+    yield writeFileThunk(`clone_of_${fileName}`, myself);
+    console.log('Clone created');
+});
+```
+
+<p>
+    제너레이터 기반 제어 흐름에서 사용되는 썽크는 콜백을 제외한 원래 함수의 모든 인자들을 그대로 기억하고 있는 일종의 함수이다. 반환값은 원래 함수의 인자들을 제외한 콜백만을 인자로 취하는 또 다른 함수이다. 위 코드에서 트릭은 썽크를 가진 `generator.next()`의 반환값을 읽는 것이다. 그 다음은 특별한 콜백을 전달하여 썽크를 호출하는 것이다.
+</p>
+
+#### co를 사용한 제너레이터 기반의 제어 흐름
+
+<p>
+    Node.js 생태계에는 제너레이터를 사용해 비동기 제어 흐름을 처리할 수 있는 몇 가지 솔루션이 있으며 co도 그 중 하나이다. co는 몇 가지 yield를 지정할 수 있는 객체들을 지원하는데 다음과 같다.
+</p>
+
+- Thunks
+- Promise
+- Arrays(병렬 실행)
+- Object(병렬 실행)
+- Generators(delegation)
+- Generator functions(delegation)
+
+<p>
+    또한 co는 다음 자체적인 생태계를 가지고 있다.
+</p>
+
+- 가장 인기있는 웹 프레임워크인 koa
+- 특정 제어 흐름 패턴을 구현한 라이브러리
+- co를 지원하기 위해 널리 사용되는 API를 랩핑한 라이브러리
