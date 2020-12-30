@@ -1,37 +1,30 @@
-"use strict";
-
 const fs = require('fs');
+const zlib = require('zlib');
+const http = require('http');
 const path = require('path');
+const file = require('path');
+const file = process.argv[2];
+const server = process.argv[3];
 
-function asyncFlowWithThunks(generatorFunction) {
-    function callback(err) {
-        if (err) {
-            return generator.throw(err); 
-        }
-        const results = [].slice.call(arguments, 1);
-        const thunk = generator.next(results.length > 1 ? results : results[0]).value;
-        thunk && thunk(callback);
-    }
-    const generator = generatorFunction();
-    const thunk = generator.next().value;
-    thunk && thunk(callback);
-}
-
-const readFileThunk = (filename, options) => {
-    return (cb) => {
-        fs.readFile(filename, options, cb);
+const options = {
+    hostname: server,
+    port: 3000,
+    path: '/',
+    method: 'PUT',
+    headers: {
+        filename: path.basename(file),
+        'Content-Type': 'application/octet-stream',
+        'Content-Encoding': 'gzip'
     }
 };
 
-const writeFileThunk = (filename, options) => {
-    return (cb) => {
-        fs.writeFile(filename, options, cb);
-    }
-};
-
-asyncFlowWithThunks(function* () {
-    const fileName = path.basename(__filename);
-    const myself = yield readFileThunk(fileName, 'utf8');
-    yield writeFileThunk(`clone_of_${fileName}`, myself);
-    console.log('Clone created');
+const req = http.request(options, res => {
+    console.log('Server response: ' + res.statusCode);
 });
+
+fs.createReadStream(file)
+    .pipe(zlib.createGzip())
+    .pipe(req)
+    .on('finish', () => {
+        console.log('File successfully sent');
+    });
