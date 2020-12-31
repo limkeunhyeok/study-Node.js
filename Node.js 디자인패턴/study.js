@@ -1,30 +1,31 @@
-const fs = require('fs');
-const zlib = require('zlib');
-const http = require('http');
-const path = require('path');
-const file = require('path');
-const file = process.argv[2];
-const server = process.argv[3];
+const stream = require('stream');
+const util = require('util');
 
-const options = {
-    hostname: server,
-    port: 3000,
-    path: '/',
-    method: 'PUT',
-    headers: {
-        filename: path.basename(file),
-        'Content-Type': 'application/octet-stream',
-        'Content-Encoding': 'gzip'
+class ReplaceStream extends stream.Transform {
+    constructor(searchString, replcaeString) {
+        super();
+        this.searchString = searchString;
+        this.replcaeString = replcaeString;
+        this.tailPiece = '';
     }
-};
 
-const req = http.request(options, res => {
-    console.log('Server response: ' + res.statusCode);
-});
+    _transform(chunk, encoding, callback) {
+        const pieces = (this.tailPiece + chunk) // 1.
+            .split(this.searchString);
+        const lastPiece = pieces[pieces.length - 1];
+        const tailPieceLen = this.searchString.length - 1;
 
-fs.createReadStream(file)
-    .pipe(zlib.createGzip())
-    .pipe(req)
-    .on('finish', () => {
-        console.log('File successfully sent');
-    });
+        this.tailPiece = lastPiece.slice(-tailPieceLen); // 2.
+        pieces[pieces.length - 1] = lastPiece.slice(0, -tailPieceLen);
+
+        this.push(pieces.join(this.replcaeString)); // 3.
+        callback();
+    }
+
+    _flush(callback) {
+        this.push(this.tailPiece);
+        callback();
+    }
+}
+
+module.exports = ReplaceStream;
