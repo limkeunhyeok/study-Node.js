@@ -1,31 +1,16 @@
-const stream = require('stream');
-const util = require('util');
+const fs = require('fs');
+const split = require('split');
+const request = require('request');
+const ParallelStream = require('./parallelStream');
 
-class ReplaceStream extends stream.Transform {
-    constructor(searchString, replcaeString) {
-        super();
-        this.searchString = searchString;
-        this.replcaeString = replcaeString;
-        this.tailPiece = '';
-    }
-
-    _transform(chunk, encoding, callback) {
-        const pieces = (this.tailPiece + chunk) // 1.
-            .split(this.searchString);
-        const lastPiece = pieces[pieces.length - 1];
-        const tailPieceLen = this.searchString.length - 1;
-
-        this.tailPiece = lastPiece.slice(-tailPieceLen); // 2.
-        pieces[pieces.length - 1] = lastPiece.slice(0, -tailPieceLen);
-
-        this.push(pieces.join(this.replcaeString)); // 3.
-        callback();
-    }
-
-    _flush(callback) {
-        this.push(this.tailPiece);
-        callback();
-    }
-}
-
-module.exports = ReplaceStream;
+fs.createReadStream(process.argv[2]) // 1.
+    .pipe(split()) // 2.
+    .pipe(new ParallelStream((url, enc, push, done) => { // 3.
+        if (!url) return done();
+        request.head(url, (err, response) => {
+            push(url + ' is ' + (err ? 'down' : 'up') + '\n');
+            done();
+        });
+    }))
+    .pipe(fs.createWriteStream('results.txt')) // 4.
+    .on('finish', () => console.log('All urls were checked'));

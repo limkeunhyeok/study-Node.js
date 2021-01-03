@@ -461,3 +461,155 @@ const transform = through2([options], [_transform], [_flush])
 ```javascript
 const readable = from2([options], _read)
 ```
+
+## 3. 스트림을 사용한 비동기 제어 흐름
+
+### 3-1 순차 실행
+
+<p>
+    기본적으로 스트림은 순차적으로 데이터를 처리한다. 예를 들어 Transform 스트림의 `_transform()` 함수는 이전 호출의 콜백이 실행되어 완료될 때까지 다음 데이터 덩어리와 함께 재호출되지 않는다. 이는 각 데이터 덩어리들을 올바른 순서로 처리하는데 있어 아주 중요한 특징이며, 스트림을 전통적인 제어 흐름 패턴의 세련된 대안으로 사용하는데 활용할 수도 있다.
+</p>
+
+```javascript
+// concatFile.js
+const fromArray = require('from2-array');
+const through = require('through2');
+const fs = require('fs');
+
+function concatFiles(destination, files, callback) {
+    const destStream = fs.createWriteStream(callback);
+    fromArray.obj(files) // 1.
+        .pipe(through.obj((file, enc, done) => { // 2.
+            const src = fs.createReadStream(file);
+            src.pipe(destStream, {end, false});
+            src.on('end', done); // 3.
+        }))
+        .on('finish', () => { // 4.
+            destStream.end();
+            callback();
+        });
+}
+
+module.exports = concatFiles;
+```
+
+1. from2-array를 사용하여 파일 배열에서 Readable 스트림을 만든다.
+2. 순차적으로 각 파일을 처리하기 위해 through 스트림을 생성한다. 각 파일에 대해 Readable 스트림을 만들고, 이를 출력 파일을 나타내는 destStream으로 연결한다. pipe 옵션으로 `{end:false}`를 정의함으로써 소스 파일의 읽기를 완료한 후에도 destStream을 닫지 않도록 한다.
+3. 소스 파일의 모든 내용이 destStream으로 전달되었을 때, through에 공개되어 있는 done 함수를 호출하여 현재 처리가 완료되었음을 알린다. 이 경우 다음 파일의 처리를 시작시켜야 한다.
+4. 모든 파일이 처리되면 finish 이벤트가 시작된다. 마지막으로 destStream을 종료하고 `concatFiles()`의 `callback()` 함수를 호출하여 전체 작업이 완료되었음을 알릴 수 있다.
+
+```javascript
+// concat.js
+const concatFiles = require('./concatFiles');
+concatFiles(process.argv[2], process.argv.slice(3), () => {
+    console.log('Files concatenated successfully');
+});
+
+// bash run
+// node concat allTogether.txt part1.txt part2.txt part3.txt
+```
+
+<p>
+    concat을 실행하면 part1, part2, part3의 내용을 포함하는 allTogether라는 새파일을 만들어 낸다.
+</p>
+
+### 3-2 비순차 병렬 실행
+
+<p>
+    순차 처리는 Node.js의 동시성을 최대한 활용하지 못하기 때문에 병목 현상이 있을 수 있다. 모든 데이터 덩어리들에 대해 느린 비동기 작업을 실행해야 하는 경우, 실행을 병렬화하고 전체 프로세스의 속도를 높이는 것이 유리할 수 있다. 단 이 패턴은 각각의 데이터 덩어리들이 서로 관계가 없는 경우에만 적용할 수 있다.
+</p>
+
+```javascript
+// parallelStream.js
+const stream = require('stream');
+
+class ParallelStream extends stream.Transform {
+    constructor(userTransform) {
+        super({objectMode: true});
+        this.userTransform = userTransform;
+        this.running = 0;
+        this.terminateCallback = null;
+    }
+
+    _transform(chunk, enc, done) {
+        this.running++;
+        this.userTransform(chunk, enc, this.push.bind(this), this._onComplete.bind(this));
+        done();
+    }
+
+    _flush(done) {
+        if (this.running > 0) {
+            this.terminateCallback = done;
+        } else {
+            done();
+        }
+    }
+
+    _onComplete(err) {
+        this.running--;
+        if (err) {
+            return this.emit('error', err);
+        }
+        if (this.running === 0) {
+            this.terminateCallback && this.terminateCallback();
+        }
+    }
+}
+
+module.exports = ParallelStream;
+```
+
+<p>
+    생성자는 `userTransform()` 함수를 받아들여 내부 변수로 저장한다. 또 부모의 생성자를 호출하여 편의상 디폴트로 객체 모드를 활성화한다. `_transform()` 메소드는 실행 중인 작업의 수를 늘린 후 `userTransform()` 함수를 실행한다. 마지막에는 `done()`을 호출함으로써 현재 변환 과정이 완료되었음을 알린다. 이로 인해 `done()`을 호출하기 전에 `userTransform()` 함수가 완료되기를 기다리지 않고 바로 호출한다. 한편, `this._onComplete()` 메소드를 `userTransform()` 함수에 특별한 콜백으로 제공한다. 이로 인해 `userTransform()`이 완료되었을 때 알림을 받을 수 있다.
+</p>
+
+<p>
+    `_flush()` 메소드는 스트림이 끝나기 직전에 호출된다. 따라서 실행 중인 작업이 있을 경우, 바로 `done()` 콜백을 호출하지 않도록 하여 finish 이벤트의 발생을 보류시킬 수 있다. 대신 `this.terminateCallback` 변수에 할당한다. `_onComplete()` 메소드는 비동기 작업이 완료될 때마다 호출된다. 실행 중인 작업이 있는지 확인하고, 없을 경우 `this.terminateCallback()` 함수를 호출하여 스트림을 종료시키고 `_flush()` 메소드에서 보류된 finish 이벤트를 발생시킨다.
+</p>
+
+#### URL 상태 모니터링 어플리케이션의 구현
+
+```javascript
+// checkUrls.js
+const fs = require('fs');
+const split = require('split');
+const request = require('request');
+const ParallelStream = require('./parallelStream');
+
+fs.createReadStream(process.argv[2]) // 1.
+    .pipe(split()) // 2.
+    .pipe(new ParallelStream((url, enc, push, done) => { // 3.
+        if (!url) return done();
+        request.head(url, (err, response) => {
+            push(url + ' is ' + (err ? 'down' : 'up') + '\n');
+            done();
+        });
+    }))
+    .pipe(fs.createWriteStream('results.txt')) // 4.
+    .on('finish', () => console.log('All urls were checked'));
+```
+
+1. 입력으로 주어진 파일로부터 Readable 스트림을 생성한다.
+2. 각각의 라인을 서로 다른 데이터 덩어리로 출력하는 Transform 스트림인 split을 통해 입력 파일의 내용을 연결한다.
+3. 그후, ParallelStream을 사용하여 요청 헤더를 보내고 응답을 기다려 URL을 검사한다. 콜백이 호출될 때 작업 결과를 스트림으로 밀어낸다.
+4. 마지막으로 모든 결과가 results.txt 파일에 연결된다.
+
+### 3-3 제한된 비순차 병렬 실행
+
+<p>
+    수천 또는 수백만 개의 URL이 포함된 파일에 대해 checkUrls 어플리케이션을 실행하려 한다면 문제가 발생한다. 앞선 어플리케이션은 한 번에 감당할 수 없는 연결을 한꺼번에 생성하여 상당한 양의 데이터를 동시에 보냄으로써 잠재적으로 어플리케이션의 안정성을 해치고 전체 시스템의 가용성을 떨어뜨린다. 이에 부하와 리소스 사용을 제어하는 방법은 병렬 작업의 동시 실행을 제한하는 것이다.
+</p>
+
+<p>
+    이를 구현하기 위해 앞선 코드에서 concurrency와 continueCallback 변수를 추가한다. running과 concurrency를 비교하여 작업을 제한하고, 최대 동시 실행 스트림의 수에 도달한 경우, `done()` 콜백을 continueCallback에 저장한다. `_onComplete()` 메소드에서 작업이 완료될 때마다 스트림의 차단을 해제할 저장된 continueCallback을 호출하여 다음 항목의 처리를 시작시킨다.
+</p>
+
+#### 순차 병렬 실행
+
+<p>
+    앞선 병렬 스트림은 발생한 데이터의 순서를 지키지 않지만, 이것이 허용되지 않는 상황이 있다. 실제로 각 데이터 덩어리가 수신된 것과 동일한 순서로 발생시키는 것이 필요하다. 이에 데이터가 수신된 것과 동일한 순서를 따르도록 각 작업에 의해 발생한 데이터들을 정렬해야 한다.
+</p>
+
+<p>
+    이를 위해 데이터 덩어리들이 각 실행 작업에 의해 발생되는 동안 데이터 덩어리들을 재정렬하기 위한 버퍼를 사용한다. through2-parallel같은 패키지를 사용하여 구현할 수 있다. through2-parallel의 인터페이스는 through2의 인터페이스와 유사하며, 차이점은 Transform 함수에 대한 동시 실행 제한을 지정할 수 있다는 점이다.
+</p>
