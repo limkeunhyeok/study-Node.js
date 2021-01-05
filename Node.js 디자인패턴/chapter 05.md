@@ -613,3 +613,249 @@ fs.createReadStream(process.argv[2]) // 1.
 <p>
     이를 위해 데이터 덩어리들이 각 실행 작업에 의해 발생되는 동안 데이터 덩어리들을 재정렬하기 위한 버퍼를 사용한다. through2-parallel같은 패키지를 사용하여 구현할 수 있다. through2-parallel의 인터페이스는 through2의 인터페이스와 유사하며, 차이점은 Transform 함수에 대한 동시 실행 제한을 지정할 수 있다는 점이다.
 </p>
+
+## 4. 파이프 패턴
+
+### 4-1 스트림 결합(combine)하기
+
+![1](https://user-images.githubusercontent.com/38815618/103668629-a7a43500-4fba-11eb-90ae-e932644662fe.PNG)
+
+- 결합된 스트림에 쓸 때는 파이프라인의 첫 번째 스트림에 쓴다.
+- 결합된 스트림으로부터 읽을 대는 파이프라인의 마지막 스트림에서 읽는다.
+
+<p>
+    결합된 스트림은 보통 이중(Duplex) 스트림이며, 첫 번째 스트림을 Writable 쪽에 연결하고 마지막 스트림을 Readable 쪽에 연결하여 만들어진다. 결합된 스트림은 다음 두 가지 중요 이점을 가진다.
+</p>
+
+- 내부 파이프라인을 숨김으로써 블랙박스화 하여 재배포할 수 있다.
+- 에러 리스너를 결합된 스트림 자체 외에 파이프라인의 각 스트림에 첨부하지 않도록 하여 에러 관리를 간소화한다.
+
+#### 결합된 스트림 구현하기
+
+- 예시를 위한 두 개의 변환 스트림
+  - 데이터 압축 및 암호화
+  - 데이터의 암호를 해독하고 압축을 해제
+
+```javascript
+// 결합된 스트림
+const zlib = require('zlib');
+const crypto = require('crypto');
+const combine = require('multipipe');
+
+module.exports.compressAndEncrypt = password => {
+    return combine(
+        zlib.createGzip(),
+        crypto.createCipher('aes192', password)
+    );
+};
+
+module.exports.decryptAndDecompress = password => {
+    return combine(
+        crypto.createDecipher('aes192', password),
+        zlib.createGunzip()
+    );
+};
+```
+
+<p>
+    위 코드에서 만든 결합된 스트림은 블랙박스처럼 사용할 수 있다. 예를 들어, 압축 및 암호화하여 파일을 보관하는 작은 어플리케이션을 만들 수 있다. 만들어진 파이프라인 밖으로 결합된 스트림을 만들어 코드를 더욱 향상시킬 수 있다.
+</p>
+
+### 4-2 스트림 포크(Fork)하기
+
+![2](https://user-images.githubusercontent.com/38815618/103668634-a83ccb80-4fba-11eb-8392-ded6fe0acf5b.PNG)
+
+<p>
+    하나의 Readable 스트림을 여러 Writable 스트림을으로 연결함으로써 스트림을 포크할 수 있다. 이는 서로 다른 대상에 동일한 데이터를 보내려는 경우에 유용하다. 또한 동일한 데이터에 대해 여러 가지 변형을 수행하거나 어떤 기준에 따라 데이터를 분할하려는 경우에도 사용할 수 있다.
+</p>
+
+#### 다중 체크섬 생성기 구현
+
+```javascript
+const fs = require('fs');
+const crypto = require('crypto');
+
+const sha1Stream = crypto.createHash('sha1');
+sha1Stream.setEncoding('base64');
+
+const md5Stream = crypto.createHash('md5');
+md5Stream.setEncoding('base64');
+
+const inputFile = process.argv[2];
+const inputStream = fs.createReadStream(inputFile);
+inputStream
+    .pipe(sha1Stream)
+    .pipe(fs.createWriteStream(inputFile + '.sha1'));
+
+inputStream
+    .pipe(md5Stream)
+    .pipe(fs.createWriteStream(inputFile + '.md5'));
+```
+
+<p>
+    inputStream 변수는 한쪽은 sha1Stream으로, 한쪽은 md5Stream으로 연결된다. 하지만 내부적으로 발생하는 몇 가지 주의점이 있다.
+</p>
+
+- `pipe()`를 호출할 때 `{end: false}`를 옵션으로 지정하지 않으면 inputStream이 끝날 때 md5Stream과 sha1Stream 모두 자동으로 종료된다.
+- 포크된 두 스트림은 동일한 데이터 덩어리를 수신하기 때문에 데이터에 대한 연산으로 부작용이 발생하지 않도록 주의해야 한다. 한곳에서 수정한 데이터는 포크된 다른 모든 스트림에 영향을 줄 수 있다.
+- 백프레셔가 바로 발생할 것이다. inputStream으로부터의 흐름은 분기된 스트림들 중 가장 느린 속도에 맞춰질 것이다.
+
+### 4-3 스트림 병합(merge)하기
+
+![3](https://user-images.githubusercontent.com/38815618/103668637-a8d56200-4fba-11eb-8e3c-2392b7577a36.PNG)
+
+<p>
+    병합은 분기와 반대되는 작업이며, 일련의 Readable 스트림을 하나의 Writable 스트림으로 파이프하는 것으로 구성된다. auto end 옵션을 사용하는 연결은 소스 중 하나가 끝나는 즉시, 대상 스트림이 종료되도록 하므로 최종 이벤트를 처리하는 방식에 주의를 기울여야 한다. 동작 중인 소스에서 이미 종료된 스트림에 쓰기를 계속하므로 이로 인한 오류가 종종 발생할 수 있다. 이 문제에 대한 해결책은 여러 소스들을 하나의 대상에 연결할 때 `{end: false}` 옵션을 사용하고 모든 소스들이 읽기를 완료한 경우에만 대상에서 `end()`를 호출하는 것이다.
+</p>
+
+<p>
+    스트림 병합 패턴에 대한 주의점은 대상 스트림으로 파이프된 데이터가 임의로 혼합된다는 점이다. 이 속성은 일부 유형의 객체 스트림에서 수용할 수 있는 속성이지만 바이너리 스트림을 처리할 때 종종 원치 않은 영향을 끼친다. 이에 순서대로 병합할 수 있는 변형 패턴들이 있으며 그 중 하나는 multistream 패키지가 있다.
+</p>
+
+### 4-4 멀티플렉싱과 디멀티플렉싱
+
+![4](https://user-images.githubusercontent.com/38815618/103668640-a8d56200-4fba-11eb-9b3d-bbed2bb75a3a.PNG)
+
+<p>
+    위의 그림은 여러 스트림을 함께 결합하지 않고 대신 공유 채널을 사용하여 일련의 스트림 데이터를 전달한다. 이는 소스 스트림이 공유 채널 내에서 논리적으로 분리되어 있기 때문에 개념적으로 다른 작업이다. 데이터가 공유 채널의 다른 끝에 도달하면 스트림을 다시 분할할 수 있다.
+</p>
+
+<p>
+    단일 스트림을 통한 전송을 가능하게 하기 위해 다중 스트림을 함께 결합하는 동작(이 경우 채널)이 멀티플렉싱(다중화)이고, 반대 동작, 즉 공유 스트림으로부터 수신된 데이터로부터 원본 스트림을 재구성하는 동작이 디멀티플렉싱(역다중화)이다. 이런 작업을 수행하는 장치를 멀티플렉서 그리고 디멀티플렉서라고 한다.
+</p>
+
+#### 원격 로거 만들기
+
+<p>
+    예시로 자식 프로세스를 시작하고 표준 출력과 표준 오류를 모두 원격 서버로 리다이렉션하는 작은 프로그램을 만든다. 이를 위해 원격 서버에서 두 스트림을 두 개의 개별 파일에 저장한다. 따라서 이 경우 공유된 매체는 TCP 연결이고 다중화될 두 개의 채널은 자식 프로세스의 stdout 및 stderr이다.
+</p>
+
+![5](https://user-images.githubusercontent.com/38815618/103668643-a96df880-4fba-11eb-98b6-dd7a993b2e39.PNG)
+
+<p>
+    예시를 위해 사용되는 기법은 패킷 스위칭이다. 이는 데이터 패킷으로 감싸 다양한 메타 정보를 지정할 수 있어 멀티플렉싱, 라우팅, 제어 흐름, 손상된 데이터 검사 등에 유용한 기술이다. 예시는 위의 그림과 같은 구조의 패킷으로 데이터를 감싼다.
+</p>
+
+##### 클라이언트 측 - 멀티플렉싱
+
+```javascript
+const child_process = require('child_process');
+const net = require('net');
+
+function multiplexChannels(sources, destination) {
+    let totalChannels = sources.length;
+    for(let i = 0; i < sources.length; i++) {
+        sources[i]
+            .on('readable', function() { // 1.
+                let chunk;
+                while((chunk = this.read()) !== null) {
+                    const outBuff = new Buffer(1 + 4 + chunk.length); // 2.
+                    outBuff.writeUInt8(i, 0);
+                    outBuff.writeUInt32BE(chunk.length, 1);
+                    chunk.copy(outBuff, 5);
+                    console.log('Sending packet to channel: ' + i);
+                    destination.write(outBuff); // 3.
+                }
+            })
+            .on('end', () => { // 4.
+                if (--totalChannels === 0) {
+                    destination.end();
+                }
+            });
+    }
+}
+```
+
+- `multiplexChannels()` 함수는 다중화할 소스 스트림과 대상 채널을 입력으로 받은 후 다음 과정을 수행한다.
+  1. 각 소스 스트림에 non-flowing 모드로 스트림에서 데이터를 읽을 수 있도록 readable 이벤트에 대한 리스너를 등록한다.
+  2. 데이터를 읽을 때 일련의 순서가 있는 패킷으로 감싼다. 패킷은 채널 ID 1바이트(Uint8), 패킷 사이즈 4바이트(Uint32), 실제 데이터 순이다.
+  3. 패킷이 준비되면 대상 스트림에 기록한다.
+  4. 마지막으로 모든 소스 스트림이 끝날 대상 스트림을 종료할 수 있도록 end 이벤트에 대한 리스너를 등록한다.
+
+```javascript
+const socket = net.connect(3000, () => { // 1.
+    const child = child_process.fork( // 2.
+        process.argv[2],
+        process.argv.slice(3),
+        {silent: true}
+    );
+    multiplexChannels([child.stdout, child.stderr], socket); // 3.
+});
+```
+
+1. 새로운 TCP 클라이언트 연결을 `localhost:3000`에 대해 생성한다.
+2. 첫 번째 커맨드 라인 인자를 경로로 사용하여 자식 프로세스를 시작하고 나머지 process.argv 배열을 자식 프로세스의 인수로 제공한다. 자식 프로세스가 부목의 stdout과 stderr을 상속받지 않도록 `{silent: true}` 옵션을 지정한다.
+3. 끝으로 자식 프로세스의 stdout과 stderr를 취하여 `multiplexChannels()` 함수를 사용하여 소켓으로 멀티플렉싱한다.
+
+##### 서버 측 - 역다중화
+
+```javascript
+const net = require('net');
+const fs = require('fs');
+
+function demultiplexChannel(source, destinations) {
+    let currentChannel = null;
+    let currentLength = null;
+    source
+        .on('readable', () => { // 1.
+            let chunk;
+            if (currentChannel === null) { // 2.
+                chunk = source.read(1);
+                currentChannel = chunk && chunk.readUInt8(0);
+            }
+            
+            if (currentLength === null) { // 3.
+                chunk = source.read(4);
+                currentLength = chunk && chunk.readUInt32BE(0);
+                if (currentLength === null) {
+                    return;
+                }
+            }
+            
+            chunk = source.read(currentLength); // 4.
+            if (chunk === null) {
+                return;
+            }
+            
+            console.log('Received packet from: ' + currentChannel);
+            destinations[currentChannel].write(chunk); // 5.
+            currentChannel = null;
+            currentLength = null;
+        })
+        .on('end', () => { // 6.
+            destinations.forEach(destination => destination.end());
+            console.log('Source channel closed');
+        });
+}
+```
+
+1. non-flowing 모드를 사용하여 스트림을 읽는다.
+2. 먼저 기존의 채널에 채널 ID가 없으면 스트림에서 1바이트를 읽고 숫자로 변환한다.
+3. 다음은 데이터의 길이를 읽는 것이다. 이를 위해 4바이트가 필요한데, 가능성이 희박하지만 내부 버퍼에 충분한 데이터가 다 도달하지 않았을 수 있다. 이 경우 `this.read()` 호출은 null을 반환할 것이다. 이 경우에 구문 분석을 중단하고 다음 번 readable 이벤트에서 다시 시도하면 된다.
+4. 데이터의 크기를 읽을 수 있게 되면, 내부 버퍼에서 가져올 데이터의 양을 알게 되므로 이를 모두 읽으려 시도한다.
+5. 모두 데이터를 읽으면 올바른 대상 채널에 데이터를 쓸 수 있으며, currentChannel과 currentLength 변수를 초기화해야 한다.
+6. 끝으로 소스 채널이 끝나면 모든 대상 채널을 종료한다.
+
+```javascript
+net.createServer(socket => {
+    const stdoutStream = fs.createWriteStream('stdout.log');
+    const stderrStream = fs.createWriteStream('stderr.log');
+    demultiplexChannel(socket, [stdoutStream, stderrStream]);
+}).listen(3000, () => console.log('Server started'));
+```
+
+1. 3000번 포트에 TCP 서버를 시작한다.
+2. 수신한 각 연결에 대해 두 개의 다른 파일을 가리키는 2개의 Writable 스트림을 생성한다. 하나는 표준 출력용, 하나는 표준 오류용인데, 대상 채널이 된다.
+3. 마지막으로 `demultiplexChannel()`을 사용하여 소켓 스트림을 stdoutStream과 stderrStream으로 역다중화한다.
+
+#### 객체 스트림 다중화 및 역다중화
+
+<p>
+    앞선 예제들은 바이너리/텍스트 스트림을 다중화 및 역다중화하는 방법이며, 동일한 규칙이 객체 스트림에도 적용된다. 큰 차이점은 객체를 사용하면 원자 메시지를 사용하여 데이터를 전송하는 방법을 이미 가지고 있으므로 다중화하는 것은 객체 내 channelID 속성을 설정하는 것으로 간단하며, 역다중화는 단순히 channelID 속성을 읽고 각 객체를 해당 대상 스트림으로 라우팅하면 된다.
+</p>
+
+![6](https://user-images.githubusercontent.com/38815618/103668646-a96df880-4fba-11eb-9bb9-1e37910c43fe.PNG)
+
+<p>
+    역다중화를 위한 또 다른 패턴은 일부 조건에 따라 소스에서 오는 데이터를 라우팅하는 것으로 구성된다. 위 그림에서 묘사하고 있는 시스템에서 사용되는 디멀티플렉서는 동물을 가리키는 객체의 스트림을 가져와서 동물의 클래스에 따라 파충류, 양서류, 그리고 포유류의 해당 대상 스트림으로 각각 라우팅한다.
+</p>
