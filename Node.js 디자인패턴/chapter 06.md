@@ -359,3 +359,358 @@ module.exports = ticker;
 <p>
     위의 코드는 매 초마다 틱을 발생시키고 발생시킨 모든 틱의 수를 유지한다. 만든 ticker 객체는 다른 이벤트 이미터 기반의 객체와 동일하게 사용하며 on 메소드로 여러 개의 리스너를 연결할 수 있지만, emit을 사용하려고 하면 TypeError가 발생하여 실행이 되지 않을 것이다.
 </p>
+
+## 3. 프록시(Proxy)
+
+<p>
+    프록시란 다른 객체에 대한 접근을 제어하는 객체이다. 여기서 다른 객체를 대상(Subject)이라고 한다. 프록시와 대상은 동일한 인터페이스를 가지고 있으며 이를 통해 다른 인터페이스와 완전히 호환되도록 바꿀 수 있다. 실제 이 패턴의 다른 이름은 서로게이트(surrogate)이다 프록시는 대상에서 실행될 작업의 전부 또는 일부를 가로채서 해당 동작을 향상시키거나 보완한다.
+</p>
+
+![1](https://user-images.githubusercontent.com/38815618/103853877-6fa00d80-50f2-11eb-9cb8-47b2fa7d9efc.PNG)
+
+<p>
+    Proxy와 Subject가 동일한 인터페이스를 갖는 방식과 어떻게 클라이언트에게 투명하게 노출되어 둘 중 하나를 서로 교환하여 사용할 수 있는지 보여준다. 프록시는 각 작업을 대상으로 전달하여 추가적인 전처리 또는 후처리로 동작을 향상시킨다. 다음은 프록시가 유용한 상황이다.
+</p>
+
+- 데이터 유효성 검사(Data validation): 프록시가 입력을 대상으로 전달하기 전에 유효성을 검사한다.
+- 보안(Security): 프록시는 클라이언트가 작업을 수행할 수 있는 권한이 있는지 확인하고 검사 결과가 긍정적인 경우에만 요청을 대상으로 전달한다.
+- 캐싱(Caching): 프록시가 내부 캐시를 유지하여 데이터가 캐시에 아직 존재하지 않는 경우에만 대상에서 작업이 실행되도록 한다.
+- 지연 초기화(Lazy initialization): 대상의 생성 비용이 비싸다면 프록시는 필요로 할 때까지 연기할 수 있다.
+- 로깅(Logging): 프록시는 메소드 호출과 상대 매개 변수를 인터셉트하고 이를 기록한다.
+- 원격 객체(Remote objects): 프록시는 원격 위치에 있는 객체를 가져와서 로컬처럼 보이게 할 수 있다.
+
+### 3-1 프록시 구현 기술
+
+<p>
+    객체를 프록시할 때 모든 메소드를 가로채기로 결정할 수도 있고, 그 중 일부만 가로채고 나머지는 직접 대상에 위임하기로 결정할 수도 있다.
+</p>
+
+#### 오브젝트 컴포지션
+
+<p>
+    컴포지션은 기능을 확장하거나 사용하기 위해 객체가 다른 객체와 결합되는 기술이다. 특정 프록시 패턴의 경우, 대상과 동일한 인터페이스를 가진 새로운 객체가 작성되고 대상에 대한 참조가 인스턴스 변수 혹은 클로저 변수 형식으로 프록시의 내부에 저장된다. 대상은 작성 시 클라이언트로부터 주입되거나 프록시 자체에 의해 작성될 수 있다.
+</p>
+
+```javascript
+// 의사(pseudo) 클래스와 팩토리를 사용한 기법
+function createProxy(subject) {
+    const proto = Object.getPrototypeOf(subject);
+
+    function Proxy(subject) {
+        this.subject = subject;
+    }
+
+    Proxy.prototype = Object.create(proto);
+
+    // 프록시된 메소드
+    Proxy.prototype.hello = function() {
+        return this.subject.hello() + ' world!';
+    };
+
+    // 델리게이트된 메소드
+    Proxy.prototype.goodbye = function() {
+        return this.subject.goodbye
+            .apply(this.subject, arguments);
+    };
+
+    return new Proxy(subject);
+}
+module.exports = createProxy;
+```
+
+<p>
+    컴포지션을 사용해 프록시를 구현하려면, `hello()`와 같이 조작하고자 하는 메소드를 가로채고 나머지는 단순히 대상에 위임해야 한다. 위의 코드는 대상이 프로토타입을 가지고 있는 제대로 된 프로토타입 체인을 유지하기 위한 특정한 사례를 보여주므로 proxy instanceof Subject를 실행하면 true가 반환된다. 이를 위해 위 코드에선 의사고전(pseudo-classical) 상속을 사용했다.
+</p>
+
+<p>
+    프록시 체인은 처음에 대상과 관련된 코드와의 호환성을 개선하는데 유용할 수 있다. 하지만 자바스크립트에는 동적 타입 결정이 있으므로 대부분의 경우 상속을 사용하지 않고 보다 즉각적인 접근 방식을 사용할 수 있다. 예를 들어, 앞선 코드에서 제시한 프록시의 대체 구현은 객체 리터럴과 팩토리를 사용하는 것이다.
+</p>
+
+```javascript
+function createProxy(subject) {
+    return {
+        // 프록시된 메소드
+        hello: () => (subject.hello() + ' world!'),
+
+        // 델리게이트된 메소드
+        goodbye: () => (subject.goodbye.apply(subject, arguments))
+    };
+}
+```
+
+#### 객체 증강(Object augmentation)
+
+<p>
+    객체 증강은 객체의 개별 메소드를 프록시하는 가장 실용적인 방법 중 하나로, 메소드를 프록시된 구현체로 대체하여 직접 대상을 수정하는 것으로 이루어진다.
+</p>
+
+```javascript
+function createProxy(subject) {
+    const helloOrig = subject.hello;
+    subject.hello = () => (helloOrig.call(this) + ' world!');
+    return subject;
+}
+```
+
+<p>
+    이 기법은 몇 개의 메소드만 프록시할 필요가 있을 때 가장 편리한 메소드지만, 대상 객체를 직접 수정하는 단점이 있다.
+</p>
+
+### 3-2 다른 기술의 비교
+
+<p>
+    컴포지션은 대상을 그대로 두어 원래의 동작을 변경하지 않기 때문에 프록시를 만드는 안전한 방법이다. 유일한 단점은 모든 메소드를 수동으로 위임(delegate)해야 한다는 것이다. 필요한 경우 대상의 속성에 대한 액세스 권한을 위임해야 할 수도 있다.
+</p>
+
+<p>
+    반면 객체 증강은 대상을 수정하므로 위임과 관련된 작업을 하지 않기 때문에, 객체 증강은 자바스크립트에서 프록시를 구현하는 가장 실용적인 방법이며, 대상을 수정하는 것이 문제가 되지 않는 상황에서 선호되는 기술이다. 하지만 대상을 필요한 경우에만 생성(지연 초기화, lazy initialization)하기 위해 대상의 초기화를 제어하려는 경우에는 컴포지션이 필요하다.
+</p>
+
+### 3-3 Writable 스트림 로그 작성
+
+<p>
+    다음은 `write()` 메소드에 대한 모든 호출을 가로채고 이러한 상황이 발생할 때마다 메시지를 기록하는 Writable 스트림에 대한 프록시를 수행하는 객체를 만든다. 프록시를 구현하기 위해 객체 컴포지션을 사용한다.
+</p>
+
+```javascript
+function createLoggingWritable(writableOrig) {
+    const proto = Object.getPrototypeOf(writableOrig);
+
+    function LoggingWritable(writableOrig) {
+        this.writableOrig = writableOrig;
+    }
+
+    LoggingWritable.prototype = Object.create(proto);
+
+    LoggingWritable.prototype.write = function(chunk, encoding, callback) {
+        if (!callback && typeof encoding === 'function') {
+            callback = encoding;
+            encoding = undefined;
+        }
+        console.log('Writing ', chunk);
+        return this.writableOrig.write(chunk, encoding, function() {
+            console.log('Finished writing ', chunk);
+            callback && callback();
+        });
+    };
+
+    LoggingWritable.prototype.on = function() {
+        return this.writableOrig.on
+            .apply(this.writableOrig, arguments);
+    };
+
+    LoggingWritable.prototype.end = function() {
+        return this.writableOrig.end
+            .apply(this.writableOrig, arguments);
+    };
+
+    return new LoggingWritable(writableOrig);
+}
+```
+
+<p>
+    위의 코드는 인자로 전달된 Writable 객체가 프록시된 버전을 반환하는 팩토리이다. 호출할 때마다 그리고 비동기 연산이 완료될 때마다 표준 출력에 메시지를 기록하도록 `write()` 메소드를 오버라이드 한다. 이는 비동기 함수의 프록시를 만드는 좋은 예시이기도 하며, Node.js같은 플랫폼에서 고려해야 할 중요한 세부 사항이다. 나머지 메소드인 `on()`과 `end()`는 원래의 writeable 스트림에 위임된다.
+</p>
+
+```javascript
+// 테스트 코드
+const fs = require('fs');
+const createLoggingWritable = require('./study');
+
+const writable = fs.createWriteStream('test.txt');
+const writableProxy = createLoggingWritable(writable);
+writableProxy.write('First chunk');
+writableProxy.write('Second chunk');
+writable.write('This is not logged');
+writableProxy.end();
+```
+
+### 3-4 생태계에서의 프록시 - 함수 후크(function hooks) 및 AOP
+
+<p>
+    대부분의 경우 프록시를 객체 증강을 사용하여 구현한다. 이 패턴을 함수 후킹이라고도 하며, 때로는 프록시 어플리케이션의 공통 영역인 AOP(Aspect Oriented Programming)라고도 한다. AOP에서 이러한 라이브러리는 대개 개발자가 특정 메소드 전후에 실행 후크를 설정할 수 있도록 한다. 이는 권고된 메소드를 실행하기 전 혹은 후에 커스텀 코드를 실행할 수 있게끔 해준다.
+</p>
+
+<p>
+    종종 프록시를 미들웨어라고 한다. 미들웨어 패턴처럼 어떤 함수의 입력/출력 전처리와 후처리를 할 수 있기 때문이다. 때로는 미들웨어와 유사한 파이프라인을 사용하여 동일한 메소드에 대해 여러 후크를 등록할 수도 있다.
+</p>
+
+### 3-5 ES2015 Proxy
+
+<p>
+    ES2015 사양에는 Proxy라는 전역 객체가 도입되었으며, 이 객체는 Node.js 버전 6부터 사용할 수 있다. Proxy API에는 타겟 및 핸들러를 인자로 허용하는 Proxy 생성자가 포함되어 있다.
+</p>
+
+```javascript
+const proxy = new Proxy(target, handler);
+```
+
+<p>
+    여기서 타겟은 프록시가 적용되는 객체를 나타내며, handler는 프록시의 동작을 정의하는 특수한 객체이다. 핸들러 객체에는 해당 작업이 프록시 인스턴스에서 수행될 때 자동으로 호출되는 트랩 메소드(예: apply, get, set, has)라는 사전에 정의된 이름을 가진 일련의 선택적 메소드를이 포함되어 있다.
+</p>
+
+```javascript
+const scientist = {
+    name: 'nikola',
+    surname: 'tesla'
+};
+
+const uppercaseScientist = new Proxy(scientist, {
+    get: (target, property) => target[property].toUpperCase()
+});
+
+console.log(uppercaseScientist.name, uppercaseScientist.surname); // NIKOLA TESLA
+```
+
+<p>
+    위의 코드는 프록시 API를 사용하여 target 객체인 scientist의 모든 속성에 대한 액세스를 가로채서 원래의 속성값을 대문자로 변환한다. target 객체 내의 일반 속성에 대한 접근을 가로채는 것을 볼 수 있는데, API가 프록시 객체의 생성을 용이하게 하는 단순한 래퍼가 아니기 때문에 가능한 것이다. 대신 자바스크립트 언어 자체에 통합된 기능으로, 개발자가 객체에서 수행할 수 있는 많은 작업을 가로채서 사용자 정의화할 수 있다. 이를 이용하면 메타 프로그래밍, 연산자 오버로딩 및 객체 가상화 같은 여러 시나리오들이 가능해진다.
+</p>
+
+```javascript
+const evenNumber = new Proxy([], {
+    get: (target, index) => index * 2,
+    has: (target, number) => number % 2 === 0
+});
+
+console.log(2 in evenNumber); // true
+console.log(5 in evenNumber); // false
+console.log(evenNumber[7]); // 14
+```
+
+- get 트랩: 배열 요소에 대한 접근을 가로채 주어진 인덱스에 해당하는 짝수를 반환
+- has 트랩: in 연산자의 사용을 가로채 주어진 숫자가 짝수인지 여부를 검사
+
+<p>
+    Proxy API는 set, delete, construct와 같은 여러 트랩을 지원하며 언제든지 폐기될 수 있는 프록시를 생성하여 모든 트랩을 비활성화함으로써 target 객체의 원래 동작을 복원할 수 있도록 해준다.
+</p>
+
+### 3-6 실전에서 어떻게 사용되는가
+
+<p>
+    Mongoose는 MongoDB에서 널리 사용되는 ODM 라이브러리이다. 내부적으로는 hooks 패키지를 사용하여 Document 객체의 init, validate, save, remove 메소드에 대한 실행 전후 실행 후크를 제공한다.
+</p>
+
+## 4. 데코레이터(Decorator)
+
+<p>
+    데코레이터는 기존 객체의 동작을 동적으로 증강시키는 구조적 패턴이다. 이 동작은 동일한 클래스의 모든 객체에 추가되지 않고 명시적으로 데코레이트한 인스턴스에만 추가되기 때문에 고전적인 상속과는 다르다.
+</p>
+
+![2](https://user-images.githubusercontent.com/38815618/103913115-8a52a080-514b-11eb-866a-08a0243bf278.PNG)
+
+<p>
+    구현 방식은 프록시 패턴과 매우 유사하지만, 객체의 기존 인터페이스 동작을 향상하거나 수정하는 대신 새로운 기능으로 기능을 증가시킨다. 위 그림에서 Decorator 객체는 methodC 기능을 추가하여 대상 객체를 확장한다.  기존의 메소드들은 추가적인 처리 없이 데코레이팅된 객체에 위임된다. 기존의 메소드들은 추가적인 처리 없이 데코레이팅된 객체에 위임된다. 필요한 경우 기존 메소드에 대한 호출을 가로채고 조작할 수 있도록 프록시 패턴을 쉽게 결합할 수 있다.
+</p>
+
+### 4-1 데코레이터 구현 기법
+
+#### 컴포지션
+
+<p>
+    컴포지션을 사용하면 데코레이팅된 컴포넌트가 일반적으로 상속받은 새 객체로 둘러싸여 배치된다. 이 경우 데코레이터는 기존 메소드를 원래 컴포넌트로 위임하면서 새 메소드를 정의하면 된다.
+</p>
+
+```javascript
+function decorate(component) {
+    const proto = Object.getPrototypeOf(component);
+
+    function Decorator(component) {
+        this.component = component;
+    }
+    Decorator.prototype = Object.create(proto);
+
+    // 새 메소드
+    Decorator.prototype.greetings = function() {
+        return 'Hi!';
+    };
+
+    // 위임된 메소드
+    Decorator.prototype.hello = function() {
+        return this.component.hello.apply(this.component, arguments);
+    };
+
+    return new Decorator(component);
+}
+```
+
+#### 객체 증강
+
+<p>
+    아래의 코드처럼 데코레이팅된 객체에 직접 새 메소드를 연결하여 객체 데코레이션을 수행할 수도 있다.
+</p>
+
+```javascript
+function decorate(component) {
+    // 새 메소드
+    component.greetings = () => {
+        // ...
+    }
+
+    return component;
+}
+```
+
+### 4-2 LevelUP 데이터베이스 장식하기
+
+#### LevelUP 및 LevelDB 소개
+
+<p>
+    LevelUP이란 원래 Chrome 브라우저에서 IndexedDB를 구현하기 위해 만들어진 키/값 저장소인 Google LevelDB와 관련한 Node.js 래퍼이다. LevelDB는 Dominic Tar에 의한 최소한의 확장으로 '데이터베이스계의 Node.js'로 정의되었다. 또한, 매우 빠른 성능과 가장 기본적인 기능 세트만을 제공하므로 개발자들은 모든 종류의 데이터베이스를 그 위에 구축할 수 있다.
+</p>
+
+<p>
+    Node.js는 LevelDB의 래퍼가 탄생한 후 인메모리 저장소에서 Riak, Redis와 같은 NoSQL 데이터베이스 그리고 IndexedDB, LocalStorage 같은 웹 저장소 엔진에 이르기까지 여러 가지 백엔드를 지원하였고, 서버와 클라이언트가 동일한 API를 사용할 수 있게 되었다.
+</p>
+
+<p>
+    오늘날 LevelUP에는 복제, 보조색인, 실시간 업데이트, 쿼리엔진 등과 같은 기능을 구현하기 위해 작은 코어를 확장한 플러그인 및 모듈들로 구성된 완벽한 생태계가 구축되었다. 또한 ProuchDB와 CouchUP 같은 CouchDB 클론을 비롯하여 Levelgraph와 같은 그래프 데이터베이스까지 Node.js와 브라우저에서 동시에 동작하는 완전한 데이터베이스들이 LevelUP 위에서 구축되었다.
+</p>
+
+#### LevelUP 플러그인 구현하기
+
+<p>
+    아래의 코드는 데코레이터 패턴을 사용하여 LevelUP을 위한 간단한 플러그인을 생성하는 방법과 오브젝트 증강 기법이다. 가장 단순하지만 추가적인 기능으로 객체를 데코레이트 하는 가장 실용적이고 효과적인 방법이다. 로직은 특정 패턴으로 객체가 데이터베이스에 저장될 때마다 알림을 받을 수 있는 LevelUP용 플러그인이다.
+</p>
+
+```javascript
+module.exports = function levelSubscribe(db) {
+    db.subscribe = (pattern, listener) => { // 1.
+        db.on('put', (key, val) => { // 2.
+            const match = Object.keys(pattern).every(
+                k => (pattern[k] === val[k]) // 3.
+            );
+        
+            if(match) {
+                listener(key, val); // 4.
+            }
+        });
+    };
+    return db;
+};
+```
+
+1. `subscribe()`라는 새로운 메소드로 db 객체를 데코레이트 하였다. 간단하게 제공된 db 인스턴스에 이 메소드를 추가하였다(객체 증강).
+2. 데이터베이스에서 수행되는 모든 put 연산을 청취(listen)한다.
+3. 매우 간단한 패턴 매칭 알고리즘을 수행했는데, 이를 통해 제공된 패턴의 모든 속성을 삽입된 데이터에서도 검사할 수 있다.
+4. 일치하는 항목이 있으면 리스너에 통보한다.
+
+```javascript
+onst level = require('level'); // 1.
+const levelSubscribe = require('./levelSubscribe'); // 2.
+
+let db = level(__dirname + '/db', {valueEncoding: 'json'});
+
+db = levelSubscribe(db);
+db.subscribe(
+    {doctype: 'tweet', language: 'en'}, // 3.
+    (k, val) => console.log(val)
+);
+
+db.put('1', {doctype: 'tweet', text: 'Hi', language: 'en'}); // 4.
+db.put('2', {doctype: 'company', name: 'ACME Co.'});
+```
+
+1. 먼저 LevelUP 데이터베이스를 초기화하고 파일이 저장될 디렉토리와 값의 기본 인코딩을 선택한다.
+2. 그후, 원래 db 객체를 데코레이트하는 플러그인을 추가한다.
+3. 플러그인에서 제공하는 새로운 기능인 `subscribe()` 메소드를 사용할 준비가 되었다. 여기서 `{doctype: 'tweet', language: 'en'}`을 가진 모든 객체를 리슨한다고 정의한다.
+4. 마지막으로 put을 사용하여 데이터베이스에 일부 값을 저장한다. 첫 번째 호출은 구독과 관련된 콜백을 호출하여 저장된 객체를 콘솔에 출력할 것이다. 이것은 객체가 구독하는 객체와 일치하기 때문이다. 대신 두 번째 호출에서는 저장된 객체가 구독 기준과 일치하지 않으므로 저장 객체가 콘솔에 출력되지 않는다.

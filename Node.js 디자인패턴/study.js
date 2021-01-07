@@ -1,19 +1,20 @@
-const EventEmitter = require('events');
+function decorate(component) {
+    const proto = Object.getPrototypeOf(component);
 
-module.exports = class Roee extends EventEmitter {
-    constructor(executor) {
-        super();
-        const emit = this.emit.bind(this);
-        this.emit = undefined;
-        executor(emit);
+    function Decorator(component) {
+        this.component = component;
     }
-};
+    Decorator.prototype = Object.create(proto);
 
-const Roee = require('./roee');
+    // 새 메소드
+    Decorator.prototype.greetings = function() {
+        return 'Hi!';
+    };
 
-const ticker = new Roee((emit) => {
-    let tickCount = 0;
-    setInterval(() => emit('tick', tickCount++), 1000);
-});
+    // 위임된 메소드
+    Decorator.prototype.hello = function() {
+        return this.component.hello.apply(this.component, arguments);
+    };
 
-module.exports = ticker;
+    return new Decorator(component);
+}
