@@ -695,7 +695,7 @@ module.exports = function levelSubscribe(db) {
 4. 일치하는 항목이 있으면 리스너에 통보한다.
 
 ```javascript
-onst level = require('level'); // 1.
+const level = require('level'); // 1.
 const levelSubscribe = require('./levelSubscribe'); // 2.
 
 let db = level(__dirname + '/db', {valueEncoding: 'json'});
@@ -714,3 +714,191 @@ db.put('2', {doctype: 'company', name: 'ACME Co.'});
 2. 그후, 원래 db 객체를 데코레이트하는 플러그인을 추가한다.
 3. 플러그인에서 제공하는 새로운 기능인 `subscribe()` 메소드를 사용할 준비가 되었다. 여기서 `{doctype: 'tweet', language: 'en'}`을 가진 모든 객체를 리슨한다고 정의한다.
 4. 마지막으로 put을 사용하여 데이터베이스에 일부 값을 저장한다. 첫 번째 호출은 구독과 관련된 콜백을 호출하여 저장된 객체를 콘솔에 출력할 것이다. 이것은 객체가 구독하는 객체와 일치하기 때문이다. 대신 두 번째 호출에서는 저장된 객체가 구독 기준과 일치하지 않으므로 저장 객체가 콘솔에 출력되지 않는다.
+
+### 4-3 실전에서 어떻게 사용되는가
+
+- level-inverted-index: LevelUP 데이터베이스에 역 색인을 추가하는 플러그인으로 ,데이터베이스에 저장된 값을 통해 간단한 텍스트 검색을 수행할 수 있다.
+- level-plus: LevelUP 데이터베이스에 원자적 업데이트를 추가하는 플러그인이다.
+
+## 5. 어댑터(Adapter)
+
+<p>
+    어댑터를 사용하면 다른 인터페이스를 사용하여 객체의 함수를 액세스할 수 있다. 다른 인터페이스를 호출하는 요소들에 의해 사용될 수 있도록 객체를 조정한다.
+</p>
+
+![3](https://user-images.githubusercontent.com/38815618/104089398-0109ae00-52b2-11eb-87bb-8488145b6474.PNG)
+
+<p>
+    위의 그림에서 어댑터(Adapter)가 본질적으로 다른 인터페이스를 노출하는 객체(Adaptee)의 래퍼(Wrapper)임을 보여준다. 또한 어댑터의 동작이 대상 객체에 대한 하나 이상의 메소드 호출로 구성될 수 있다는 것을 보여준다. 구현의 관점에서 가장 보편적인 기술은 컴포지션이다. 어댑터가 대상 객체의 메소드에 대한 중재자 역활을 제공하도록 한다.
+</p>
+
+### 5-1 파일 시스템 API를 통한 LevelUP 사용
+
+<p>
+    아래의 코드는 LevelUP API를 가지고 어댑터를 구축하여 fs 모듈과 호환되는 인터페이스로 변환한다. 특히 `readFile()` 및 `writeFile()` 호출이 `db.get()` 및 `db.put()` 호출로 변환된다. `readFile()`과 `writeFile()`는 완벽하게 대체하지 않지만 일반적인 상황에서는 확실히 작업을 수행한다.
+</p>
+
+```javascript
+const path = require('path');
+
+module.exports = function createFsAdapter(db) {
+    const fs = {};
+
+    fs.readFile = (filename, options, callback) => {
+        if (typeof options === 'function') {
+            callback = options;
+            options = {};
+        } else if(typeof options === 'string') {
+           options = {encoding: options};
+        }
+
+        db.get(path.resolve(filename), { // 1.
+                valueEncoding: options.encoding
+            },
+            (err, value) => {
+                if(err) {
+                    if(err.type === 'NotFoundError') { // 2.
+                        err = new Error(`ENOENT, open "${filename}"`);
+                        err.code = 'ENOENT';
+                        err.errno = 34;
+                        err.path = filename;
+                    }
+                    return callback && callback(err);
+                }
+                callback && callback(null, value); // 3.
+            }
+        );
+    };
+
+    fs.writeFile = (filename, contents, options, callback) => {
+        if(typeof options === 'function') {
+            callback = options;
+            options = {};
+        } else if(typeof options === 'string') {
+            options = {encoding: options};
+        }
+
+        db.put(path.resolve(filename), contents, {
+            valueEncoding: options.encoding
+        }, callback);
+    };
+
+    return fs;
+};
+```
+
+1. db 클래스에서 파일을 검색하기 위해 파일명을 키로 사용하여 `db.get()`을 호출한다. 이때 파일 전체 경로명을 사용해야 한다. 데이터베이스에서 사용하는 valueEncoding 값을 입력으로 받은 최종 인코딩 옵션과 동일하도록 설정한다.
+2. 키가 데이터베이스에서 발견되지 않으면 ENOENT를 오류 코드로 생성하는데, 이 오류 코드는 누락된 파일을 나타내기 위해 원래의 fs 모듈에서 사용하는 코드이다. 다른 유형의 오류는 콜백으로 전달된다.
+3. 키/값 쌍이 데이터베이스에서 성공적으로 검색되면 콜백을 사용하여 호출자에게 값을 반환한다.
+
+### 5-2 실전에서는 어떻게 사용되는가
+
+- LevelUP은 다양한 저장소의 백엔드로 사용된다. 이는 내부 LevelUP API를 복제하기 위해 만들어진 다양한 어댑터를 통해 가능하다.
+- Jugglingdb는 다중 데이터베이스 ORM이며, 다양한 데이터베이스와 호환을 위해 여러 어댑터를 사용한다.
+- level-filesystem: LevelUP 위에 fs API를 구현한 것이다.
+
+## 6. 전략(Strategy)
+
+<p>
+    전략 패턴은 컨텍스트라 불리는 객체를 사용하여 변수 부분을 상호 교환 가능한 개별 전략이라는 객체들로 추출함으로써 연산 로직의 변형을 지원한다. 컨텍스트는 일련의 알고리즘의 공통 로직을 구한혀는 반면, 개별 전략은 입력값, 시스템 구성 혹은 사용자 기본 설정 같은 다양한 요소들을 컨텍스트의 동작에 적용할 수 있도록 변경 가능한 부분 구현한다. 개별 전략들은 대개 솔루션 제품군에 속하며 이들은 모두 동일한 인터페이스를 구현한다. 이 인터페이스는 컨텍스트에서 알 수 있는 인터페이스여야 한다.
+</p>
+
+![4](https://user-images.githubusercontent.com/38815618/104089399-01a24480-52b2-11eb-90a3-e1243138505e.PNG)
+
+<p>
+    위의 그림은 컨텍스트 객체가 어떻게 다양한 전략들을 마치 교체 가능한 기계 장치의 부속과 같이 교체하고 연결시킬 수 있는지 보여준다. 이 패턴은 알고리즘 내에서 문제를 분리하는데 도움이 될 뿐만 아니라, 더 나은 유연성을 제공하여 동일한 문제의 다양한 변형에 적용할 수 있다.
+</p>
+
+### 6-1 다중 형식의 환경설정 객체
+
+<p>
+    아래의 코드는 데이터베이스 URL, 서버의 리스닝 포트 등과 같은 어플리케이션에 의해 사용되는 일련의 환경설정 파라미터들을 보관하는 Config 클래스이다. Config 클래스는 파라미터에 접근할 수 있는 간단한 인터페이스를 제공하며, 파일과 같은 영구 저장소를 사용하여 환경설정을 가져오거나 내보내는 방법도 제공한다.
+</p>
+
+```javascript
+const fs = require('fs');
+const objectPath = require('object-path');
+
+class Config {
+    constructor(strategy) {
+        this.data = {};
+        this.strategy = strategy;
+    }
+
+    get(path) {
+        return objectPath.get(this.data, path);
+    }
+
+    set(path, value) {
+        return objectPath.set(this.data, path, value);
+    }
+
+    read(file) {
+        console.log(`Deserializing from ${file}`);
+        this.data = this.strategy.deserialize(fs.readFileSync(file, 'utf-8'));
+    }
+
+    save(file) {
+        console.log(`Serializing to ${file}`);
+        fs.writeFileSync(file, this.strategy.serialize(this.data));
+    }
+}
+
+module.exports = Config;
+```
+
+<p>
+    위 코드에서 환경설정 데이터를 인스턴스 변수(this.data)에 캡슐화한 다음, 점 경로 표기법(dotted path notation)을 사용하여 환경설정 속성에 접근할 수 있는 `set()`, `get()` 메소드를 제공한다. 데이터를 분석하고 직렬화하는 알고리즘을 나타내는 변수 strategy를 생성자에서 입력으로 받는다.
+</p>
+
+<p>
+    파일로부터 환경설정을 읽을 때, deserialization 작업을 strategy에 위임한다. 그리고 환경설정을 파일에 저장할 때, strategy를 사용하여 환경설정을 시리얼라이즈한다. 이 간단한 디자인은 Config 객체가 데이터를 로드하고 저장할 때 다른 파일 형식을 지원할 수 있게 한다.
+</p>
+
+```javascript
+// strategy.js
+const ini = require('ini');
+
+module.exports.json = {
+  deserialize: data => JSON.parse(data),
+  serialize: data => JSON.stringify(data, null, '  ')
+};
+
+module.exports.ini = {
+  deserialize: data => ini.parse(data),
+  serialize: data => ini.stringify(data)
+};
+```
+
+<p>
+    위의 코드는 JSON 및 INI 데이터를 분석하고 직렬화하기 위한 전략이다.
+</p>
+
+```javascript
+// configTest.js
+const Config = require('./config');
+const strategies = require('./strategies');
+
+const jsonConfig = new Config(strategies.json);
+jsonConfig.read('samples/conf.json');
+jsonConfig.set('book.nodejs', 'design patterns');
+jsonConfig.save('samples/conf_mod.json');
+
+const iniConfig = new Config(strategies.ini);
+iniConfig.read('samples/conf.ini');
+iniConfig.set('book.nodejs', 'design patterns');
+iniConfig.save('samples/conf_mod.ini');
+```
+
+<p>
+    위의 코드는 테스트 모듈로 전략 패턴의 속성을 보여준다. 환경설정 관리의 일반적인 부분들만 구현한 Config 클래스 하나만을 정의했지만, 직렬화 및 역직렬화에 사용되는 strategy를 변경하면 다른 파일 형식을 지원하는 다른 Config 인스턴스를 만들 수 있다. 다음은 다른 유용한 접근법이다.
+</p>
+
+- 두 개의 서로 다른 strategy 쌍을 생성: 하나는 역직렬화를 위한 것이고 다른 하나는 직렬화를 위한 것이다. 이렇게 하면 한 형식을 읽어서 다른 형식으로 저장할 수 있다.
+- 제공된 파일의 확장자에 따라 동적으로 strategy를 선택: Config는 파일의 확장자와 strategy를 쌍으로 담고 있는 맵을 보관하고 확장자에 따른 적절한 알고리즘을 선택하는데 사용한다.
+
+### 6-2 실전에서는 어떻게 사용하는가
+
+<p>
+    Passport.js는 웹 서버의 여러 인증 체계를 지원하는 Node.js의 인증 프레임워크이다. Passport는 인증 프로세스 중에 필요한 공통적인 논리와 변경할 수 있는 부분, 즉 실제 인증 단계를 분리하는데 전략 패턴을 사용한다.
+</p>

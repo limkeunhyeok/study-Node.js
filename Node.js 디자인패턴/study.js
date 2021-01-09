@@ -1,20 +1,32 @@
-function decorate(component) {
-    const proto = Object.getPrototypeOf(component);
+const fs = require('fs');
+const objectPath = require('object-path');
 
-    function Decorator(component) {
-        this.component = component;
+class ConfigTemplate {
+    read(file) {
+        console.log(`Deserializing from ${file}`);
+        this.data = this._deserialize(fs.readFileSync(file, 'utf-8'));
     }
-    Decorator.prototype = Object.create(proto);
 
-    // 새 메소드
-    Decorator.prototype.greetings = function() {
-        return 'Hi!';
-    };
+    save(file) {
+        console.log(`Serializing to ${file}`);
+        fs.writeFileSync(file, this._serialize(this.data));
+    }
 
-    // 위임된 메소드
-    Decorator.prototype.hello = function() {
-        return this.component.hello.apply(this.component, arguments);
-    };
+    get(path) {
+        return objectPath.get(this.data, path);
+    }
 
-    return new Decorator(component);
+    set(path, value) {
+        return objectPath.set(this.data, path, value);
+    }
+
+    _serialize() {
+        throw new Error('_serialize() must be implemented');
+    }
+
+    _deserialize() {
+        throw new Error('_deserialize() must be implemented');
+    }
 }
+
+module.exports = ConfigTemplate;
