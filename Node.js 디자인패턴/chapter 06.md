@@ -902,3 +902,240 @@ iniConfig.save('samples/conf_mod.ini');
 <p>
     Passport.js는 웹 서버의 여러 인증 체계를 지원하는 Node.js의 인증 프레임워크이다. Passport는 인증 프로세스 중에 필요한 공통적인 논리와 변경할 수 있는 부분, 즉 실제 인증 단계를 분리하는데 전략 패턴을 사용한다.
 </p>
+
+## 7. 상태(State)
+
+![5](https://user-images.githubusercontent.com/38815618/104089400-023adb00-52b2-11eb-8efd-1bfda2391e1c.PNG)
+
+<p>
+    상태는 컨텍스트의 상태에 따라 전략이 변경되는 전략 패턴의 변형이다. 전략 패턴에서 사용자 기본 설정, 환경설정 매개 변수 등 다양한 변수를 기반으로 전략을 선택하는데, 선택이 완료되면 전략은 컨텍스트의 나머지 수명 동안 변경되지 않는다. 대신, 상태 패턴에서 전략은 동적이며 컨텍스트의 수명 동안 변경될 수 있으므로 해당 동작은 내부의 상태에 따라 변경될 수 있다.
+</p>
+
+<p>
+    상태 전이는 컨텍스트 객체, 클라이언트 코드 또는 상태 객체 자체에 의해 시작되고 제어될 수 있다. 상태 객체 자체에 의해 시작되고 제어되는 옵션은 일반적으로 컨텍스트가 모든 가능한 상태와 이들 사일를 전환하는 방법에 대해 알 필요가 없으므로 유연성 및 디커플링 측면에서 최상의 결과를 제공한다.
+</p>
+
+### 7-1 기본적인 fail-safe-socket 구현하기
+
+<p>
+    아래의 코드는 서버와의 연결이 끊어졌을 때 실패하지 않는 클라이언트 TCP 소켓을 구현한 것이다. 대신 서버가 오프라인 상태인 동안 보낼 모든 데이터를 대기열(queue)에 넣고 연결이 다시 설정되자마자 다시 보낸다. 이 소켓을 간단한 모니터링 시스템의 컨텍스트 내에서 사용하며, 모니터링 시스템에서는 정기적으로 일련의 컴퓨터 리소스 사용률에 대한 통계를 보낸다고 가정한다.
+</p>
+
+```javascript
+// failsafeSocket.js
+
+const OfflineState = require('./offlineState');
+const OnlineState = require('./onlineState');
+
+class FailsafeSocket {
+    constructor (options) { // 1.
+        this.options = options;
+        this.queue = [];
+        this.currentState = null;
+        this.socket = null;
+        this.states = {
+            offline: new OfflineState(this),
+            online: new OnlineState(this)
+        };
+        this.changeState('offline');
+    }
+
+    changeState(state) { // 2.
+        console.log('Activating state: ' + state);
+        this.currentState = this.states[state];
+        this.currentState.activate();
+    }
+
+    send(data) { // 3.
+        this.currentState.send(data);
+    }
+}
+
+module.exports = options => {
+    return new FailsafeSocket(options);
+};
+```
+
+1. 생성자는 소켓이 오프라인일 때 보낼 데이터를 쌓아두는 대기열을 포함해 다양한 데이터 구조를 초기화한다. 또한 소켓이 오프라인일 동안의 동작과 온라인일 때의 동작을 구현하기 위해 두 가지의 상태 집합을 생성한다.
+2. changeState() 메소드는 한 상태에서 다른 상태로 전환하는 역활을 한다. 단순히 currentState 인스턴스 변수를 업데이트하고 대상(Subject) 상태에서 `activate()`를 호출한다.
+3. `send()` 메소드는 소켓의 기능이다. 이는 오프라인/온라인 상태에 따라 다른 동작을 해야 한다. 이는 현재 활성 상태를 작업에 위임하여 수행된다.
+
+```javascript
+// offlineState.js
+
+const jot = require('json-over-top');
+
+module.exports = class OfflineState {
+    constructor(failsafeSocket) {
+        this.failsafeSocket = failsafeSocket;
+    }
+
+    send(data) {
+        this.failsafeSocket.queue.push(data);
+    }
+
+    activate() {
+        const retry = () => {
+            setTimeout(() => this.activate(), 500);
+        }
+
+        this.failsafeSocket.socket = jot.connect(
+            this.failsafeSocket.options,
+            () => {
+                this.failsafeSocket.socket.removeListener('error', retry);
+                this.failsafeSocket.changeState('online');
+            }
+        );
+        this.failsafeSocket.socket.once('error', retry);
+    }
+};
+```
+
+1. 원시 TCP 소켓을 사용하는 대신 json-overtcp라는 라이브러리를 사용하여 TCP 연결을 통해 JSON 객체를 쉽게 보낼 수 있다.
+2. `send()` 메소드는 받은 데이터를 큐에 넣는 역활만 한다. 앞선 코드는 일단 오프라인 상태라고 가정하고 있으므로, 필요한 작업의 전부이다.
+3. `activate()` 메소드는 json-over-tcp를 사용하여 서버와의 연결을 설정하려고 시도한다. 작업이 실패하면 500밀리 초 후에 다시 시도한다. 유효한 연결이 설정될 때까지 계속 시도한다. 연결이 설정되면 failsafeSocket의 상태가 온라인으로 전환된다.
+
+```javascript
+// onlineState.js
+module.exports = class OnlineState {
+    constructor(failsafeSocket) {
+        this.failsafeSocket = failsafeSocket;
+    }
+
+    send(data) { // 1.
+        this.failsafeSocket.socket.write(data);
+    }
+
+    activate() { // 2.
+        this.failsafeSocket.queue.forEach(data => {
+            this.failsafeSocket.socket.write(data);
+        });
+        this.failsafeSocket.queue = [];
+
+        this.failsafeSocket.socket.once('error', () => {
+            this.failsafeSocket.changeState('offline');
+        });
+    }
+};
+```
+
+1. 온라인 상태라는 가정하에 `send()` 메소드는 데이터를 소켓에 직접 쓴다.
+2. `activate()` 메소드는 소켓이 오프라인 상태일 때 대기시켰던 모든 데이터를 소켓이 쓴(write) 후에 오류 이벤트를 수신하기 시작한다. 편의상 오류를 소켓이 오프라인이라는 현상으로 간주한다. 이 경우 오프라인 상태로 전환된다.
+
+```javascript
+// server.js
+const jot = require('json-over-tcp');
+const server = jot.createServer(5000);
+
+server.on('connection', socket => {
+  socket.on('data', data => {
+    console.log('Client data', data);
+  });
+});
+
+server.listen(5000, () => console.log('Started'));
+
+// client.js
+const createFailsafeSocket = require('./failsafeSocket');
+const failsafeSocket = createFailsafeSocket({port: 5000});
+
+setInterval(() => {
+  // 메모리 사용량 전송
+  failsafeSocket.send(process.memoryUsage());
+}, 1000);
+```
+
+<p>
+    서버는 수신한 모든 JSON 메시지를 단순하게 콘솔에 출력하고, 클라이언트는 매 초마다 FailsafeSocket 객체를 활용하여 메모리 사용량의 측정치를 전송한다. 이 시스템을 시험하려면 클라이언트와 서버 모두 실행해야 한다. 그 후에 서버를 중지했다가 다시 시작하여 failsafeSocket의 기능을 테스트할 수 있다. 클라이언트 상태가 온라인과 오프라인 사이에서 변경되고 서버가 오프라인 상태일 때 수집된 모든 메모리 측정 값이 대기열에 들어간 다음, 서버가 다시 온라인 상태가 되면 즉시 재전송된다.
+</p>
+
+## 8. 템플릿(Template)
+
+<p>
+    템플릿은 알고리즘의 골격을 나타내는 추상 의사 클래스(abstract pseudo class)를 정의하는 것으로 구성된다. 이 클래스의 일부 단계는 정의되지 않은 채로 있다. 서브 클래스는 템플릿 메소드라는 단계를 구현하여 알고리즘의 비어있는 부분을 채울 수 있다. 이 패턴의 목적은 유사한 알고리즘의 모든 변형을 패밀리 클래스로 정의할 수 있게 하는 것이다.
+</p>
+
+![6](https://user-images.githubusercontent.com/38815618/104089396-00711780-52b2-11eb-9c1a-2a33ee543242.PNG)
+
+<p>
+    위 다이어그램에 표현된 세 가지 구현 클래스는 템플릿을 확장하여, C++ 용어로는 abstract 또는 pure virtual인 `templateMethod()`에 대한 구현을 제공한다. 자바스크립트에서는 메소드가 undefined인 채로 남아 있거나 메소드가 구현되어야 한다는 것을 나타내기 위해, 항상 예외를 발생시키는 함수에 할당되어 있을 수 있다는 것을 의미한다. 템플릿 패턴은 상속이 구현의 핵심 부분이다.
+</p>
+
+<p>
+    템플릿과 전략의 목적은 매우 유사하지만, 차이는 구조와 구현에 있다. 둘 다 공통 부분을 재사용하면서 알고리즘의 일부분을 변경할 수 있다. 하지만 전략을 사용하면 동적으로 런타임에 변경할 수 있지만, 템플릿은 구체적인 클래스가 정의되는 순간 알고리즘이 완성된다. 이러한 가정하에 템플릿 패턴은 미리 패키지화된 알고리즘의 변형을 만들어야 하는 상황에 더 적합할 수 있다.
+</p>
+
+### 8-1 환경설정 관리자 템플릿
+
+<p>
+    아래의 코드는 이전의 Config 객체를 템플릿으로 구현한 것이다.
+</p>
+
+```javascript
+// configTemplate.js
+const fs = require('fs');
+const objectPath = require('object-path');
+
+class ConfigTemplate {
+    read(file) {
+        console.log(`Deserializing from ${file}`);
+        this.data = this._deserialize(fs.readFileSync(file, 'utf-8'));
+    }
+
+    save(file) {
+        console.log(`Serializing to ${file}`);
+        fs.writeFileSync(file, this._serialize(this.data));
+    }
+
+    get(path) {
+        return objectPath.get(this.data, path);
+    }
+
+    set(path, value) {
+        return objectPath.set(this.data, path, value);
+    }
+
+    _serialize() {
+        throw new Error('_serialize() must be implemented');
+    }
+
+    _deserialize() {
+        throw new Error('_deserialize() must be implemented');
+    }
+}
+
+module.exports = ConfigTemplate;
+```
+
+<p>
+    새 ConfigTemplate 클래스는 `_deserialize()` 및 `_serialize()`와 같은 두 가지 템플릿 메소드를 정의하는데, 환경설정을 로딩하고 저장을 수행하는데 필요하다. 함수명의 밑줄은 내부에서만 사용할 수 있는 보호된(protect) 메소드를 표시하기 위한 간편한 방법이다. 자바스크립트에서는 메소드를 추상적으로 선언할 수 없기 때문에 메소드를 단순히 스텁으로 정의하고 호출될 때 예외를 던진다.
+</p>
+
+```javascript
+// jsonConfig.js
+const util = require('util');
+const ConfigTemplate = require('./configTemplate');
+
+class JsonConfig extends ConfigTemplate {
+
+    _deserialize(data) {
+        return JSON.parse(data);
+    };
+
+    _serialize(data) {
+        return JSON.stringify(data, null, '  ');
+    }
+}
+
+module.exports = JsonConfig;
+```
+
+<p>
+    JsonConfig 클래스는 템플릿인 ConfigTemplate 클래스에서 확장되며 `_deserialize()` 및 `_serialize()` 메소드에 대한 구체적인 구현을 제공한다. 이에 클래스 자체에서 수행되기 때문에 독립적인 환경설정 객체로 사용될 수 있다.
+</p>
+
+### 8-2 실전에서는 어떻게 사용되는가
+
+<p>
+    이전에 스트림 클래스를 확장하여 사용자 정의 스트림을 구현하였을 때 템플릿 패턴을 사용하였다. 새로운 커스텀 스트림을 생성하기 위해서는 특정 추상 스트림 클래스를 상속받아 템플릿 메소드 구현을 제공해야 했다.
+</p>

@@ -1,32 +1,19 @@
-const fs = require('fs');
-const objectPath = require('object-path');
+const zmq = require('zmq');
+const ZmqMiddlewareManager = require('./zmqMiddlewareManager');
+const jsonMiddleware = require('./jsonMiddleware');
 
-class ConfigTemplate {
-    read(file) {
-        console.log(`Deserializing from ${file}`);
-        this.data = this._deserialize(fs.readFileSync(file, 'utf-8'));
+const reply = zmq.socket('rep');
+reply.bind('tcp://127.0.0.1:5000');
+
+const zmqm = new ZmqMiddlewareManager(reply);
+
+zmqm.use(jsonMiddleware.json());
+zmqm.use({
+    inbound: function (message, next) {
+        console.log('Received: ', message.data);
+        if (message.data.action === 'ping') {
+            this.send({action: 'pong', echo: message.data.echo});
+        }
+        next();
     }
-
-    save(file) {
-        console.log(`Serializing to ${file}`);
-        fs.writeFileSync(file, this._serialize(this.data));
-    }
-
-    get(path) {
-        return objectPath.get(this.data, path);
-    }
-
-    set(path, value) {
-        return objectPath.set(this.data, path, value);
-    }
-
-    _serialize() {
-        throw new Error('_serialize() must be implemented');
-    }
-
-    _deserialize() {
-        throw new Error('_deserialize() must be implemented');
-    }
-}
-
-module.exports = ConfigTemplate;
+});
