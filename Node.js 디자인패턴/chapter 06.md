@@ -1139,3 +1139,378 @@ module.exports = JsonConfig;
 <p>
     이전에 스트림 클래스를 확장하여 사용자 정의 스트림을 구현하였을 때 템플릿 패턴을 사용하였다. 새로운 커스텀 스트림을 생성하기 위해서는 특정 추상 스트림 클래스를 상속받아 템플릿 메소드 구현을 제공해야 했다.
 </p>
+
+## 9. 미들웨어(Middleware)
+
+<p>
+    미들웨어는 일반적인 의미에서 하위 서비스와 어플리케이션 사이에서 작용하는 모든 종류의 소프트웨어 계층을 정의한다(문자 그대로 중앙에 있는 소프트웨어).
+</p>
+
+### 9-1 미들웨어로서의 Express
+
+<p>
+    Express는 Node.js 세계에서 미들웨어라는 용어를 대중화하여 특정 디자인 패턴에 바인딩했다. 실제로 Express에 있어서 미들웨어는 파이프라인에서 구성되고 들어오는 HTTP 요청 및 응답의 처리를 책임지는 일련의 서비스인 일반적인 함수들을 말한다.
+</p>
+
+<p>
+    Express는 개발자에게 많은 권한을 주고 최소화된 웹 프레임워크로 유명하다. 미들웨어 패턴은 개발자가 프레임 워크 코어를 확장하지 않고도 현재 어플림케이션에 쉽게 추가할 수 있는 새 기능을 쉽게 만들고 배포할 수 있는 효과적인 전략이다.
+</p>
+
+```javascript
+functiuon(req, res, next) {...}
+```
+
+<p>
+    위 코드에서 req는 들어오는 HTTP 요청이고, res는 응답이며, next는 현재 미들웨어가 작업을 완료하고 차례로 파이프라인의 다음 미들웨어를 트리거할 때 호출되는 콜백이다. 다음은 Express 미들웨어가 수행하는 작업이다.
+</p>
+
+- 요청 본문의 구문 분석
+- 요청 및 응답 압축 및 해제
+- 액세스 로그 생성
+- 세션 관리
+- 암호화된 쿠키 관리
+- CSRF(Cross-Site Request Forgery) 보호 제공
+
+<p>
+    위의 작업은 사실 어플리케이션의 주요 기능과 상관없는 작업들이거나 웹 서버의 최소한의 코어 부분과도 관련이 없는 작업들이다. 오히려 어플리케이션의 나머지 부분을 지원하고 실제 요청의 처리가 핵심 비즈니스 로직에만 집중할 수 있게 해주는 액세사리이다. 기본적으로 이러한 작업은 중간에 위치한 소프트웨어들이 하게 된다.
+</p>
+
+### 9-2 패턴으로서의 미들웨어
+
+<p>
+    오늘날 Node.js에서 미들웨어라는 단어는 Express 프레임워크의 경계를 훨씬 넘어서 사용되며, 모든 종류의 데이터에 대한 전처리 및 후처리를 수행하기 위하여 함수의 형태로 처리 단위, 필터 및 핸들러의 집합이 비동기 시퀀스의 형태로 연결된 특정 패턴을 나타낸다.
+</p>
+
+![7](https://user-images.githubusercontent.com/38815618/104095573-edbf0880-52da-11eb-8eab-030513949443.PNG)
+
+- 새로운 미들웨어는 `use()` 함수를 호출하여 등록할 수 있다. 일반적으로 새로운 미들웨어는 파이프라인 끝에 추가할 수 있지만 엄격한 규칙은 아니다.
+- 처리를 위해 새로 수신된 데이터의 처리는 비동기 순차 실행의 흐름으로 해당 등록된 미들웨어가 호출된다. 파이프라인의 각 유닛은 이전 유닛의 실행 결과를 입력으로 받는다.
+- 각각의 미들웨어는 콜백을 호출하지 않거나 에러를 콜백에 전달함으로써 데이터 처리를 중단할 수 있다. 오류 상황은 대개 오류 처리 전용인 다른 일련의 미들웨어는 실행시킨다.
+
+<p>
+    미들웨어의 전략에는 다음이 포함된다.
+</p>
+
+- 추가 속성 또는 기능을 사용한 데이터 추가
+- 데이터를 일련의 처리 결과로 바꾸기
+- 데이터의 불변성을 유지하고 처리 결과로 항상 새로운 사본을 반환
+
+### 9-3 ØMQ용 미들웨어 프레임워크 만들기
+
+<p>
+    ØMQ(ZMQ 또는 ZeroMQ)는 다양한 프로토콜을 사용하여 네트워크를 통해 원자 메시지를 교환하기 위한 간단한 인터페이스를 제공한다. 이는 성능 면에서 빛을 발하고 기본적인 추상화 집합은 맞춤형 메시징 아키텍처의 구현을 용이하게 하기 위해 특별히 만들어졌다. 이러한 이유로 ØMQ는 종종 복잡한 분산 시스템을 구축하기 위해 선택된다.
+</p>
+
+<p>
+    ØMQ의 인터페이스는 꽤 낮은 수준이다. 메시지에 문자열과 바이너리 버퍼를 사용할 수 있기 때문에 라이브러리의 사용자가 데이터의 인코딩이나 사용자 지정 형식을 구현해야 한다. 다음 예제는 ØMQ 소켓을 통과하는 데이터의 전처리 및 후 처리를 추상화하는 미들웨어 인프라를 구축한다. 이를 통해 JSON 객체로 투명하게 작업할 수 있을 뿐만 아니라 처리 절차에 따라 이동하는 메시지를 완벽하게 압축할 수 있다.
+</p>
+
+#### 미들웨어 관리자
+
+```javascript
+module.exports = class ZmqMiddlewareManager {
+    constructor(socket) {
+        this.socket = socket;
+        this.inboundMiddleware = []; // 1.
+        this.outboundMiddleware = [];
+        socket.on('message', message => { // 2.
+            this.executeMiddleware(this.inboundMiddleware, {
+                data: message
+            });
+        });
+    }
+  
+    send(data) {
+        const message = {
+            data: data
+        };
+    
+        this.executeMiddleware(this.outboundMiddleware, message,
+            () => {
+                this.socket.send(message.data);
+            }
+        );
+    }
+  
+    use(middleware) {
+        if (middleware.inbound) {
+            this.inboundMiddleware.push(middleware.inbound);
+        }
+        if (middleware.outbound) {
+            this.outboundMiddleware.unshift(middleware.outbound);
+        }
+    }
+  
+    executeMiddleware(middleware, arg, finish) {
+        function iterator(index) {
+            if (index === middleware.length) {
+                return finish && finish();
+            }
+            middleware[index].call(this, arg, err => {
+                if (err) {
+                    return console.log('There was an error: ' + err.message);
+                }
+                iterator.call(this, ++index);
+            });
+        }
+    
+        iterator.call(this, 0);
+    }
+};
+```
+
+<p>
+    클래스의 첫 부분에서 이 새 컴포넌트의 생성자를 정의한다. 인수로 ØMQ 소켓을 허용한 후 다음 작업을 수행한다.
+</p>
+
+1. 미들웨어 함수들을 포함할 두 개의 빈 list를 만든다. 하나는 인바운드 메시지 용이고, 다른 하나는 아웃바운드 메시지 용이다.
+2. 'message' 메시지 이벤트에 대한 새로운 리스너를 연결하여 소켓에서 오는 새 메시지를 수신하는 즉시 시작한다. 리스너에서 inboundMiddleware 파이프라인을 실해앟여 인바운드 메시지를 처리한다.
+
+<p>
+    ZmqMiddlewareManager 클래스의 다음 메소드인 send는 새로운 메시지가 소켓을 통해 전송될 때 미들웨어를 실행하는 역활을 한다. outboundMiddleware 목록의 필터들을 사용하여 처리된 다음, 실제 네트워크 전송을 위해 `socket.send()`로 전달된다.
+</p>
+
+<p>
+    use 메소드는 파이프라인에 새로운 미들웨어 기능을 추가할 때 필요하다. 각 미들웨어는 쌍으로 제공되며, 각 목록에 추가될 미들웨어 함수를 담은 inbound 및 outbound라는 두 개의 속성을 가진 객체이다. 여기서 인바운드 미들웨어는 inboundMiddleware 목록의 끝으로 푸시되는 반면, 아웃바운드 미들웨어는 outboundMiddleware 목록의 시작 부분에 삽입되는 것이 중요하다. 상호 보완적인 인바운드/아웃바운드 미들웨어 함수는 일반적으로 역순으로 실행되어야 하기 때문이다.
+</p>
+
+<p>
+    executeMiddleware는 컴포넌트의 핵심을 나타내며, 미들웨어 기능을 실행하는 함수이다. 입력으로 받은 미들웨어 배열의 각 함수는 하나씩 차례로 실행되며, 동일한 arg 객체가 각 미들웨어 함수에 인자로 제공된다. 이는 하나의 미들웨어에서 다음 미들웨어로 데이터를 전파할 수 있게 해주는 트릭이다. 반복이 끝나면 `finish()` 콜백이 호출된다.
+</p>
+
+#### JSON 메시지를 지원하는 미들웨어
+
+```javascript
+module.exports.json = () => {
+    return {
+        inbound: function (message, next) {
+            message.data = JSON.parse(message.data.toString());
+            next();
+        },
+        outbound: function (message, next) {
+            message.data = new Buffer(JSON.stringify(message.data));
+            next();
+        }
+    }
+};
+```
+
+- inbound 미들웨어는 입력으로 받은 메시지를 역직렬화하고 메시지의 데이터 속성에 결과를 다시 할당하여 파이프라인을 따라 추가적인 처리를 할 수 있다.
+- outbound 미들웨어는 모든 데이터를 message.data에 직렬화한다.
+
+#### ØMQ 미들웨어 프레임워크의 사용
+
+##### 서버
+
+```javascript
+const zmq = require('zmq');
+const ZmqMiddlewareManager = require('./zmqMiddlewareManager');
+const jsonMiddleware = require('./jsonMiddleware');
+
+const reply = zmq.socket('rep');
+reply.bind('tcp://127.0.0.1:5000');
+
+const zmqm = new ZmqMiddlewareManager(reply);
+
+zmqm.use(jsonMiddleware.json());
+zmqm.use({
+    inbound: function (message, next) {
+        console.log('Received: ', message.data);
+        if (message.data.action === 'ping') {
+            this.send({action: 'pong', echo: message.data.echo});
+        }
+        next();
+    }
+});
+```
+
+##### 클라이언트
+
+```javascript
+const zmq = require('zmq');
+const ZmqMiddlewareManager = require('./zmqMiddlewareManager');
+const jsonMiddleware = require('./jsonMiddleware');
+
+const request = zmq.socket('req');
+request.connect('tcp://127.0.0.1:5000');
+
+const zmqm = new ZmqMiddlewareManager(request);
+
+zmqm.use(jsonMiddleware.json());
+zmqm.use({
+    inbound: function (message, next) {
+        console.log('Echoed back: ', message.data);
+        next();
+    }
+});
+
+setInterval( () => {
+    zmqm.send({action: 'ping', echo: Date.now()});
+}, 1000);
+```
+
+### 9-4 Koa에서 제너레이터를 사용한 미들웨어
+
+<p>
+    Koa는 콜백을 사용하는 대신, ES2015 제너레이터 함수를 사용하여 미들웨어 패턴을 구현한다.
+</p>
+
+![8](https://user-images.githubusercontent.com/38815618/104128736-98ebc280-53ac-11eb-8bd9-d16bbf1d45f7.PNG)
+
+<p>
+    위 그림에서 앱의 핵심에 도달하기 전에 여러 가지 미들웨어를 가로질러 요청을 받았다. 이 화살표를 인바운드 또는 다운스트림이라고 한다. 이 흐름이 앱의 핵심에 도달하면 모든 미들웨어를 다시 거쳐가게 되지만 이번에는 역순으로 수행한다. 이는 미들웨어가 앱의 메인 로직이 실행된 후 응답이 사용자에게 전송될 준비가 된 다음에, 또 다른 액션들을 수행할 수 있게 한다. 이 부분을 아웃바운드 또는 업스트림이라고 한다.
+</p>
+
+## 10. 커맨드(Command)
+
+<p>
+    커맨드는 나중에 수행할 동작에 필요한 모든 정보를 캡슐화하는 객체로 생각할 수 있다. 그후 이 목적을 구체화하여 실제 수행으로 전환시키는 것은 다른 컴포넌트의 책임이다.
+</p>
+
+![9](https://user-images.githubusercontent.com/38815618/104128737-9a1cef80-53ac-11eb-96f9-accd718b88a6.PNG)
+
+- 커맨드: 메소드 또는 함수를 호출하는데 필요한 정보를 캡슐화하는 객체
+- 클라이언트: 명령을 생성하고 그것을 호출자에게 제공
+- 호출자: 대상에서 명령을 실행하는 역활
+- 타겟: 호출의 대상으로 단일 함수거나 한 객체의 메소드
+
+<p>
+    커맨드 패턴의 장점은 다음과 같다.
+</p>
+
+- 커맨드를 나중에 실행하도록 예약할 수 있다.
+- 커맨드는 쉽게 직렬화되어 네트워크를 통해 전송될 수 있다. 이 간단한 속성을 사용하여 원격 컴퓨터 간에 작업을 배포하고, 브라우저에서 서버로 명령을 전송하고, RPC 시스템을 만드는 등의 작업을 수행할 수 있다.
+- 커맨드를 사용하면 시스템에서 실행되는 모든 작업의 내역을 쉽게 유지할 수 있다.
+- 커맨드는 데이터 동기화 및 충돌 해결을 위한 일부 알고리즘에서 중요한 부분이다.
+- 실행이 예정된 커맨드가 아직 실행되지 않은 경우 취소할 수 있다. 이렇게 하여 어플리케이션의 상태를 커맨드를 실행하기 전의 상태로 되돌릴 수도 있다.
+- 몇 가지 명령들을 함께 그룹화할 수 있다. 이는 원자성을 가진 트랜잭션을 만들거나 그룹의 모든 작업을 한번에 실행하는 메커니즘을 구현하는데 사용할 수 있다.
+- 중복 제거, 결합 및 분할 혹은 오늘날의 실시간 협업 소프트웨어의 기반인 운영 변환(Operational Transformation, OT)과 같은 더 복잡한 알고리즘을 적용하는 일련의 커맨드들로 다양한 종류의 변환을 수행할 수 있다.
+
+### 10-1 유연한 패턴
+
+#### 작업 패턴(Task pattern)
+
+```javascript
+function createTask(target, args) {
+    return () => {
+        target.apply(null, args);
+    }
+}
+```
+
+<p>
+    자바스크립트에서 호출을 표현하는 객체를 만드는 가장 쉬운 방법은 클로저를 만드는 것이다. 이 기술은 별도의 컴포넌트를 사용하여 작업 실행을 제어하고 예약할 수 있었는데, 이는 본질적으로 커맨드 패턴의 호출자와 같다. 콜백 패턴 자체는 매우 간단한 커맨드 패턴의 버전이라고 생각할 수 있다.
+</p>
+
+### 10-2 보다 복잡한 명령
+
+<p>
+    다음 예제는 실행 취소 및 직렬화를 지원하는, 트위터와 같은 서비스에 상태 업데이트를 전송하는 작은 객체인 커맨드의 타겟을 구현한 것이다. 단순화를 위해 서비스 모형의 mock-up을 사용한다.
+</p>
+
+```javascript
+const request = require('request');
+const util = require('util');
+
+//The target
+const statusUpdateService = {
+    statusUpdates: {},
+    sendUpdate: function(status) {
+        console.log('Status sent: ' + status);
+        let id = Math.floor(Math.random() * 1000000);
+        statusUpdateService.statusUpdates[id] = status;
+        return id;
+    },
+    
+    destroyUpdate: id => {
+        console.log('Status removed: ' + id);
+        delete statusUpdateService.statusUpdates[id];
+    }
+};
+```
+
+<p>
+    다음은 새로운 상태 업테이트를 게시하는 코드이다.
+</p>
+
+```javascript
+//The Command
+function createSendStatusCmd(service, status) {
+    let postId = null;
+    
+    const command = () => {
+        postId = service.sendUpdate(status);
+    };
+    
+    command.undo = () => {
+        if(postId) {
+            service.destroyUpdate(postId);
+            postId = null;
+        }
+    };
+    
+    command.serialize = () => {
+        return {type: 'status', action: 'post', status: status};
+    };
+    
+    return command;
+}
+```
+
+1. 커맨드 자체는 호출될 때 행위를 시작시키는 함수이다. 다시 말해, 앞서 본 작업 패턴을 구현한다. 커맨드가 실행되면 타겟 서비스의 메소드를 사용하여 새로운 상태 업데이트 정보를 보낸다.
+2. 메인 작업의 `undo()` 함수는 동작의 결과를 되돌린다. 여기에서는 타겟 서비스에서 `destroyUpdate()` 메소드를 호출하기만 한다.
+3. `serialize()` 함수는 동일한 커맨드 객체를 재구성하기 위해 필요한 모든 정보를 담은 JSON 객체를 만드는 함수이다.
+
+```javascript
+//The Invoker
+class Invoker {
+    constructor() {
+        this.history = [];
+    }
+
+    run (cmd) {
+        this.history.push(cmd);
+        cmd();
+        console.log('Command executed', cmd.serialize());
+    }
+
+    delay (cmd, delay) {
+        setTimeout( () => {
+            this.run(cmd);
+        }, delay)
+    }
+
+    undo () {
+        const cmd = this.history.pop();
+        cmd.undo();
+        console.log('Command undone', cmd.serialize());
+    }
+
+    runRemotely (cmd) {
+        request.post('http://localhost:3000/cmd',
+            {json: cmd.serialize()},
+            err => {
+                console.log('Command executed remotely', cmd.serialize());
+            }
+        );
+    }
+}
+```
+
+<p>
+    `run()` 메소드는 Invoker의 기본 기능이다. 커맨드를 history 인스턴스 변수에 저장한 다음 커맨드 자체를 시작시킨다. `delay()` 메소드의 실행을 지연시킬 수 있다. `undo()` 메소드는 커맨드를 되돌린다. `runRemotely()` 메소드는 웹 서비스를 사용하여 네트워크를 통해 직렬화한 다음, 전송하여 원격 서버에서 커맨드를 실행할 수 있다. 다음 아래의 코드는 클라이언트 측에서 사용하는 모습을 보여준다.
+</p>
+
+```javascript
+//The Client code
+const invoker = new Invoker();
+const command = createSendStatusCmd(statusUpdateService, 'HI!');
+invoker.run(command);
+invoker.delay(command, 1000 * 60 * 60);
+invoker.undo();
+invoker.runRemotely(command);
+```
+
+<p>
+    마지막으로 커맨드 패턴의 전체에서 실제로 필요한 것은 단순한 명령 실행이 다가 아니라는 사실을 알아 두는 것이 중요하다. 필요로 하는 모든 것이 단지 호출 뿐이라면 복잡한 커맨드는 오히려 해가 될 것이다. 작업의 실행을 예약하거나 비동기 작업을 실행해야 하는 경우에는 간단한 작업 패턴이 최상의 절충안을 제공할 수 있다. 대신 앞선 코드처럼 실행 취소, 변환, 충돌 해결 같은 고급 기능이 필요한 경우에는 보다 복잡한 표현들을 가지는 커맨드 패턴의 사용이 필수적일 것이다.
+</p>
