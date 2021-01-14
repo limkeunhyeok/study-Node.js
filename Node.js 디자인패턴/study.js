@@ -1,19 +1,36 @@
-const zmq = require('zmq');
-const ZmqMiddlewareManager = require('./zmqMiddlewareManager');
-const jsonMiddleware = require('./jsonMiddleware');
+const fnArgs = require('parse-fn-args');
 
-const reply = zmq.socket('rep');
-reply.bind('tcp://127.0.0.1:5000');
+module.exports = function() {
+    const dependencies = {};
+    const factories = {};
+    const diContainer = {};
 
-const zmqm = new ZmqMiddlewareManager(reply);
+    diContainer.factory = (name, factory) => {
+        factories[name] = factory;
+    };
 
-zmqm.use(jsonMiddleware.json());
-zmqm.use({
-    inbound: function (message, next) {
-        console.log('Received: ', message.data);
-        if (message.data.action === 'ping') {
-            this.send({action: 'pong', echo: message.data.echo});
+    diContainer.register = (name, dep) => {
+        dependencies[name] = dep;
+    };
+
+    diContainer.get = (name) => {
+        if (!dependencies[name]) {
+            const factory = factories[name];
+            dependencies[name] = factory && diContainer.inject(factory);
+            if (!dependencies[name]) {
+                throw new Error('Cannot find module: ' + name);
+            }
         }
-        next();
-    }
-});
+        return dependencies[name];
+      };
+      
+    diContainer.inject = (factory) => {
+        const args = fnArgs(factory)
+            .map(function(dependency) {
+                return diContainer.get(dependency);
+            });
+        return factory.apply(null, args);
+    };
+    
+    return diContainer;
+}
