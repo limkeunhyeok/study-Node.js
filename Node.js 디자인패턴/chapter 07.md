@@ -685,3 +685,269 @@ module.exports = function plugin() {
 - 어플리케이션 내부에 대한 액세스 권한이 있는 경우가 많으므로 플러그인이 제어하는 확장이 더 강력하고 유연하며, 플러그인이 어플리케이션 자체의 일부가 아니어서 자유롭게 이동할 수 있다. 하지만 이는 장점보다는 때때로 책임 문제일 수도 있다. 사실, 어플리케이션의 모든 변경 사항이 플러그인에 보다 쉽게 영향을 미치기 때문에 메인 어플리케이션이 변경됨에 따라 지속적인 플러그인의 업데이트가 필요하다.
 - 어플리케이션이 제어하는 확장을 사용하기 위해서는 기본 어플리케이션에 플러그인을 위한 인프라가 필요하다. 플러그인이 제어하는 확장의 경우 유일한 요건은 어플리케이션의 컴포넌트를 어떤 방식으로든 확장할 수 있어야 한다.
 - 플러그인이 제어하는 확장을 사용하면 어플리케이션의 내부 서비스를 플러그인과 공유해야 한다. 그렇지 않으면 플러그인을 이용하여 기능을 확장할 수 없다. 어플리케이션이 제어하는 확장을 사용하면, 확장만이 아니라 사용을 위해서라도 어플리케이션의 일부 서비스에 액세스할 수 있어야 한다.
+
+### 3-4 로그아웃 플러그인 구현하기
+
+<p>
+    이 기능은 만료 시 토큰이 유효하지 않게 한다. 이러한 기능을 지원하려면 데이터베이스를 만든 후에 각 토큰을 데이터베이스에 저장한 다음, 유효성을 검사할 때마다 해당 토큰을 확인해야 한다. 토큰을 무효화하려면 데이터베이스에서 토큰을 제거한다.
+</p>
+
+#### 하드코드된 종속성 사용하기
+
+<p>
+    구현하려는 플러그인의 첫 번째 유형은 어플리케이션이 주로 자신의 상태 유지 모듈을 연결하기 위해 하드코딩된 종속성을 사용하는 경우이다. 이런 경우 플러그인이 node_modules 디렉터리 밑에 있는 패키지에 있다면, 메인 어플리케이션의 서비스를 사용하기 위해 상위 패키지에 액세스할 수 있어야 한다.
+</p>
+
+- `require()`를 사용하여 상대 또는 절대 경로를 통해 어플리케이션 루트를 탐색한다.
+- 부모 어플리케이션 모듈의 `require()`를 참조하여 사용한다. 일반적으로 이 모듈이 플러그인을 인스턴스화 한다. 이렇게 하면, 플러그인이 아닌 부모 어플리케이션에서 호출된 것처럼 `require()`를 사용하여 어플리케이션의 모든 서비스에 쉽게 액세스할 수 있다.
+
+<p>
+    첫 번째 기술은 패키지가 메인 어플리케이션의 위치를 알고 있다고 가정하므로 강력한 것은 아니다. 부모 모듈을 가장하는(impersonating) 패턴은 패키지의 위치에 상관없이 사용될 수 있다. 이를 빌드하려면 먼저 node_modules 디렉터리에 authsrv-plugin-logout이라는 새로운 패키지를 만들어야 한다.
+</p>
+
+```json
+// package.json
+{
+    "name": "authsrv-plugin-logout",
+    "version": "0.0.0"
+}
+```
+
+<p>
+    이제 메인 모듈을 만드는데, index.js 파일을 사용한다. 이 모듈은 패키지를 요구할 때 Node.js가 로드하고자 시도하는 디폴트 모듈이다.
+</p>
+
+```javascript
+// index.js - 1
+const parentRequire = module.parent.require;
+
+const authService = parentRequire('./lib/authService');
+const db = parentRequire('./lib/db');
+const app = parentRequire('./app');
+
+const tokensDb = db.sublevel('tokens');
+// ...
+```
+
+<p>
+    첫 줄의 `const parentRequire = module.parent.require;`는 플러그인을 로드하는 부모 모듈의 `require()` 함수에 대한 참조를 얻는다. 이 경우, 부모는 메인 어플리케이션의 app 모듈이 될 것이며, 이것은 우리가 `parentRequire()`를 사용할 때마다 app.js에서 모듈을 로드하는 것처럼 로드한다는 것을 의미한다.
+</p>
+
+```javascript
+// index.js - 2
+
+// ...
+const oldLogin = authService.login; // 1.
+authService.login = (username, password, callback) => {
+    oldLogin(username, password, (err, token) => { // 2.
+        if (err) return callback(err); // 3.
+
+        tokensDb.put(token, {
+            username: username
+        }, () => {
+            callback(null, token);
+        });
+    });
+}
+// ...
+```
+
+1. 기존 `login()` 메소드에 대한 참조를 저장한 후, 프록시 버전으로 대체한다.
+2. 프록시 함수에서 원래의 반환값을 가로채기 위해 사용자 정의 콜백을 제공하여 원래의 `login()` 메소드를 호출한다.
+3. 원래 `login()`이 오류를 반환하면 콜백에 전달하기만 하면 된다. 그렇지 않으면 토큰을 데이터베이스에 저장한다.
+
+```javascript
+// index.js - 3
+
+// ...
+const oldCheckToken = authService.checkToken;
+
+authService.checkToken = (token, callback) => {
+    tokensDb.get(token, function (err, res) {
+        if (err) return callback(err);
+
+        oldCheckToken(token, callback);
+    });
+}
+// ...
+```
+
+<p>
+    원래의 `checkToken()` 메소드를 제어하기 전에 토큰이 데이터베이스에 존재하는지 확인해야 한다. 토큰이 발견되지 않으면 `get()` 함수는 오류를 반환한다. 이는 토큰이 무효화되었다는 것을 의미하므로 콜백으로 즉시 오류를 반환한다.
+</p>
+
+```javascript
+// index.js - 4
+
+// ...
+authService.logout = (token, callback) => {
+    tokensDb.del(token, callback);
+}
+// ...
+```
+
+<p>
+    토큰을 무효화하는데 사용하는 새 메소드를 추가한다. `logout()` 메소드는 간단하게 데이터베이스에서 토큰을 삭제한다.
+</p>
+
+```javascript
+// index.js - 5
+
+// ...
+app.get('/logout', (req, res, next) => {
+    authService.logout(req.query.token, function() {
+        res.status(200).send({ok: true});
+    });
+});
+```
+
+<p>
+    Express 서버에 새로운 라우트를 추가하여 웹 서비스를 통해 새로운 기능을 제공한다.
+</p>
+
+```javascript
+// app.js
+
+// ...
+let app = module.exports = express();
+app.use(bodyParser.json());
+
+require('authsrv-plugin-logout');
+
+app.post('/login', authController.login);
+app.all('/checkToken', authController.checkToken);
+// ...
+```
+
+<p>
+    위의 코드는 앞서 만든 플러그인을 메인 어플리케이션에 연결하기 위해 수정한 것이다. 단순히 플러그인을 `require()`하면 되며, 어플리케이션이 시작되면 즉시 제어 흐름이 플러그인에 제공되며, 이 플러그인을 통해 authService와 app 모듈이 확장된다.
+</p>
+
+<p>
+    모듈 위장(impersonation)은 하드코딩된 종속성의 한 형태이며, 장단점을 공유하고 있다. 한편으로 최소한의 노력과 최소한의 인프라 조건으로 메인 어플리케이션의 모든 서비스에 액세스 할 수 있지만, 다른 한편으로는 서비스의 특정 인스턴스 뿐만 아니라 그 위치와도 밀접한 커플링을 만들어 낸다. 이는 플러그인이 메인 어플리케이션의 변경과 리팩토링에 더 쉽게 영향을 받도록 한다.
+</p>
+
+#### 서비스 로케이터를 사용한 서비스 노출
+
+```javascript
+// node_modules/authsrv-plugin-logout/index.js
+
+module.exports = (serviceLocator) => {
+    const authService = serviceLocator.get('authService');
+    const db = serviceLocatore.get('db');
+    const app = serviceLocator.get('app');
+
+    const tokensDb = db.sublevel('tokens');
+
+    const oldLogin = authService.login;
+    authService.login = (username, password, callback) => {
+        // 이전 버전과 동일
+    }
+
+    const oldCheckToken = authService.checkToken;
+    authService.checkToken = (token, callback) => {
+        // 이전 버전과 동일
+    }
+
+    authService.logout = (token, callback) => {
+        // 이전 버전과 동일
+    }
+
+    app.get('/logout', (req, res, next) => {
+        // 이전 버전과 동일
+    });
+};
+```
+
+<p>
+    위의 코드에서 플러그인은 부모 어플리케이션의 서비스 로케이터를 입력을 받기 때문에 필요에 따라 모든 서비스를 액세스할 수 있다. 어플리케이션이 종속성 측면에서 플러그인에 필요한 것이 무엇인지 미리 알 필요가 없다는 것을 의미한다.
+</p>
+
+```javascript
+// app.js
+
+// ...
+const svcLoc = require('./lib/serviceLocator')();
+svcLoc.register(...);
+// ...
+
+svcLoc.register('app', app);
+const plugin = require('authsrv-plugin-logout');
+plugin(svcLoc);
+// ...
+```
+
+- 플러기은이 서비스에 접근할 수 있도록 하기 위해 해당 어플리케이션 모듈 자체를 서비스 로케이터에 등록한다.
+- 플러그인을 require 한다.
+- 서비스 로케이터를 인자로 제공하여 플러그인의 메인 함수를 호출한다.
+
+<p>
+    서비스 로케이터의 주요 장점은 어플리케이션의 모든 서비스를 플러그인에 공개할 수 있는 간단한 방법을 제공한다는 것이지만 플러그인에서 부모 어플리케이션으로 또는 다른 플러그인으로 서비스를 공유할 수 있는 메커니즘으로도 사용할 수 있다.
+</p>
+
+#### DI를 사용한 서비스 공개
+
+```javascript
+// node_modules/authsrv-plugin-logout/index.js
+
+module.exports = (app, authService, db) => {
+    const tokensDb = db.sublevel('tokens');
+
+    const oldLogin = authService.login;
+    authService.login = (username, password, callback) => {
+        // 이전 버전과 동일
+    }
+
+    const oldCheckToken = authService.checkToken;
+    authService.checkToken = (token, callback) => {
+        // 이전 버전과 동일
+    }
+
+    authService.logout = (token, callback) => {
+        // 이전 버전과 동일
+    }
+
+    app.get('/logout', (req, res, next) => {
+        // 이전 버전과 동일
+    });
+};
+```
+
+<p>
+    위의 코드는 앞선 코드에서 부모 어플리케이션의 서비스들을 입력으로 받기 위해 플러그인의 코드를 팩토리로 래핑한다. 나머지는 변경되지 않은 상태로 남아있다. 이후에 app.js 모듈에서 다음과 같이 수정한다.
+</p>
+
+```javascript
+// app.js
+
+// ...
+const plugin = require('authsrv-plugin-logout');
+plugin(app, authService, authController, db);
+// ...
+```
+
+<p>
+    DI는 플러그인에 일련의 서비스를 제공하는 가장 깔끔한 방법이면서 공개되는 내용을 제어하기 위한 최상의 수준을 제공하여 과도한 확장에 대하여 정보 숨기기나 보호 기능이 향상된다. 그러나 메인 어플리케이션이 플러그인이 필요로 하는 서비스를 항상 알 수는 없기 때문에 장점이 단점으로 여겨질 수도 있다. 그래서 비실용적으로 모든 서비스를 주입하거나 부모 어플리케이션의 기본적인 핵심 서비스와 같은 일부만 주입하도록 할 수 있을 것이다. 이러한 이유만으로 플러그인이 제어하는 확장(plugin-controlled extensibility)을 지원하고자 한다면, DI가 이상적인 선택은 아닐 것이다. 하지만 DI 컨테이너를 사용하면 이러한 문제를 쉽게 해결할 수 있다.
+</p>
+
+#### DI 컨테이너를 사용한 서비스 노출
+
+```javascript
+// app.js
+
+// ...
+const diContainer = require('./lib/diContainer')();
+diContainer.register(...);
+// ...
+//플러그인 초기화
+diContainer.inject(require('authsrv-plugin-logout'));
+// ...
+```
+
+<p>
+    팩토리나 어플리케이션 인스턴스를 등록한 후에 DI 컨테이너를 사용하여 종속성을 주입하고 플러그인을 인스턴스화하면 된다. 이렇게 하면 플러그인은 부모 어플리케이션이 알 필요가 없는 일련의 자체 의존성들을 요구할 수 있다. 모든 연결은 DI 컨테이너에 의해 자동으로 재수행된다.
+</p>
+
+<p>
+    DI 컨테이너를 사용하면 각 플러그인이 잠재적으로 어플리케이션의 모든 서비스에 액세스할 수 있으므로 정보 은닉과 사용 또는 확장할 수 있는 것들에 대한 통제가 줄어든다. 이 문제에 대한 해결책은 플러그인에 공개하려는 서비스만 등록하는 별도의 DI 컨테이너를 만드는 것이다. 이렇게 하면 각 플러그인이 메인 어플리케이션에서 볼 수 있는 것을 제어할 수 있다. 이는 DI 컨테이너가 캡슐화와 정보 은닉 측면에서 매우 좋은 선택이 될 수 있음을 보여준다.
+</p>
