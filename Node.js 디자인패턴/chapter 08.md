@@ -152,3 +152,272 @@ module.exports = {
 - 프록시(Proxy): 서버에서 실행되도록 한 코드를 브라우저에서 실행할 때, 종종 서버에 있는 코드들도 브라우저에서 사용할 수 있기를 기대하는 경우가 많으며, 여기서 원격 프록시 패턴이 적용된다.
 - 옵저버(Observer): 이벤트를 발생시키는 컴포넌트와 이벤트를 수신하는 컴포넌트 사이의 자연스러운 추상화를 제공한다.
 - DI 및 서비스 로케이터: 주입 순간에 모듈의 구현을 대체하는데 유용하게 사용할 수 있다.
+
+## 4. 리액트(React) 소개
+
+<p>
+    리액트란 페이스북에서 발표한 자바스크립트 라이브러리이다. 리액트는 컴포넌트의 개념에 초점을 맞추어 뷰의 추상화를 제공한다. 여기서 컴포넌트는 버튼, 입력 폼, HTML의 div 또는 사용자 인터페이스의 다른 모든 엘리먼트 같은 간단한 컨테이너이다. 이 개념은 특정한 책임을 가진, 고도로 재사용 가능한 컴포넌트를 정의하고 구성하는 것만으로 어플리케이션의 사용자 인터페이스를 구축할 수 있어야 한다는 것이다.
+</p>
+
+<p>
+    리액트의 모토는 '한번 배우고 모든 곳에 사용하세요(Learn it once, use it everywehere)'로, 모든 다른 상황에 맞도록 특정한 구현이 필요하다는 것을 분명히 함과 동시에 일단 배우고 나면 다양한 환경에 걸쳐 편리한 원리와 도구를 재사용할 수 있다는 뜻이다.
+</p>
+
+<p>
+    리액트가 범용 자바스크립트 개발과 관련해서 주요 특징은 거의 동일한 코드를 사용하여 서버와 클라이언트 모두에서 뷰 코드를 렌더링할 수 있다. 이는 리액트를 사용하여 사용자가 Node.js 서버에서 직접 요청한 페이지를 표시하는데 필요한 모든 HTML 코드를 렌더링한 후 페이지가 로드될 때 추가적인 상호 작용이나 렌더링을 브라우저에서 직접 수행할 수 있다. 이를 통해 SPA(Single-PageApplication)를 구축할 수 있다. 동시에 사용자가 로드하는 첫 번째 페이지를 서버에서 제공함으로써 로딩 시간이 단축되고 검색 엔진의 콘텐츠 색인 기능이 향상된다. 또한 리액트의 Virtual DOM은 변경 사항이 렌더링되는 방식을 최적화할 수 있다.
+</p>
+
+### 4-1 첫 번째 리액트 컴포넌트
+
+```javascript
+// src/joyceBooks.js
+
+const React = require('react');
+
+const books = [
+    'Dubliners',
+    'A Portrait of the Artist as a Young Man',
+    'Exiles and poetry',
+    'Ulysses',
+    'Finnegans Wake'
+];
+
+class JoyceBooks extends React.Component {
+    render() {
+        return (
+            <div>
+                <h2>James Joyce's major works</h2>
+                <ul className="books">{
+                    books.map((book, index) => 
+                        <li className="book" key={index}>{book}</li>
+                    )
+                }</ul>
+            </div>
+        );
+    }
+}
+
+module.exports = JoyceBooks;
+```
+
+<p>
+    위의 코드는 브라우저 윈도우에 엘리먼트의 목록을 보여주는 간단한 위젯 컴포넌트이다. 리액트 컴포넌트를 정의하려면 `React.Component`로부터 확장된 클래스를 만들어야 한다. 이 클래스는 반드시 `render()`를 정의해야 하는데, 이 함수는 컴포넌트가 담당하는 DOM의 일부를 표현하는데 사용된다.
+</p>
+
+### 4-2 JSX가 뭐지?!
+
+<p>
+    고유의 복잡성을 처리하기 위해 리액트는 가상 DOM을 기술하고 조작하기 위해 고안된 중간 형식으로 JSX를 도입했다. JSX는 언어가 아니며, 자바스크립트를 실행하기 위해 일반 자바스크립트로 변환해야 하는 자바스크립트의 슈퍼셋이다. JSX는 웹 컴포넌트를 정의하는 HTML 코드를 기술하는데 사용되며, 향상된 자바스크립트 구문의 일부를 보는 것처럼 JSX 코드의 중간에 직접 HTML 태그를 넣을 수 있다. 이 접근 방식은 빌드 시에 동적으로 검증되며, 어떤 태그를 닫는 것을 잊어 버리는 등의 경우 미리 오류가 발생한다.
+</p>
+
+```javascript
+render() {
+    return (
+        <div>
+            <h2>James Joyce's major works</h2>
+            <ul className="books">{
+                books.map((book, index) => 
+                    <li className="book" key={index}>{book}</li>
+                )
+            }</ul>
+        </div>
+    );
+}
+```
+
+<p>
+    JSX 코드 내 임의의 위치에 특정 표시기나 래퍼를 둘 필요 없이 HTML 코드를 삽입할 수 있다. 위의 코드에서는 div 태그를 정의하며, div 태그는 컴포넌트의 컨테이너 역활을 한다. 또한 HTML 블록 내에 자바스크립트 로직을 넣을 수 있으며, HTML 코드의 일부를 동적으로 정의할 수 있다. 위의 코드에서는 ul 태그 내에서 map 함수를 사용하여 반복을 수행하면서 책 이름을 목록에 추가한다. 중괄호는 HTML 블록 내에서 표현식을 정의하는데 사용되며, 간단한 사용 사례는 변수의 내용을 출력하는데 사용한다. 마지막으로 자바스크립트 콘텐츠 내에 또 다른 HTML 코드 블록을 다시 넣을 수 있으므로, HTML 및 자바스크립트 콘텐츠를 가상 DOM을 표현하는 모든 레벨에서 혼합해서 중첩시킬 수 있다.
+</p>
+
+### 4-3 JSX 변환을 위한 Webpack 설정
+
+```javascript
+const path = require('path');
+
+module.exports = {
+    entry: path.join(__dirname, "src", "main.js"),
+    output: {
+        path: path.join(__dirname, "dist"),
+        filename: "bundle.js"
+    },
+    module: {
+        loaders: [
+            {
+                test: path.join(__dirname, "src"),
+                loader: 'babel-loader',
+                query: {
+                    cacheDirectory: 'babel_cache',
+                    presets: ['es2015', 'react']
+                }
+            }
+        ]
+    }
+};
+```
+
+<p>
+    위의 코드는 JSX 코드를 브라우저에서 실행될 수 있는 자바스크립트 코드로 변환하는데 사용할 수 있는 Webpack의 설정 예시이다. 이전의 ES2015 Webpack 예시와 동일하며 차이점은 다음과 같다.
+</p>
+
+- Babel의 react preset을 사용하고 있다.
+- cacheDirectory 옵션을 사용하여 Babel은 특정 디렉터리를 캐시 폴더로 사용하고 더 신속하게 번들 파일을 만들 수 있다. 반드시 필요한 것은 아니나 개발 속도를 높이는데 도움이 된다.
+
+### 4-4 브라우저에서 렌더링하기
+
+```javascript
+// src/main.js
+
+const React = require('react');
+const ReactDOM = require('react-dom');
+const JoyceBooks = require('./joyceBooks');
+
+window.onload = () => {
+    ReactDOM.render(<JoyceBooks/>, document.getElementById('main'))
+};
+```
+
+<p>
+    위의 코드는 브라우저에서 렌더링한다. 여기서 `ReactDOM.render()` 함수는 JSX 코드 블록과 DOM의 엘리먼트를 인자로 취하여 JSX 블록을 HTML 코드로 렌더링하고 두 번째 인자로 지정된 DOM 노드에 적용한다. 여기서 전달하는 JSX 블록은 사용자 정의 태그 만을 가지고 있다. 컴포넌트가 필요할 때마다 JSX 태그로 사용할 수 있으므로 컴포넌트의 새 인스턴스를 다른 JSX 블록에 쉽게 삽입할 수 있다. 이는 개발자가 화면을 여러 개의 결합된 컴포넌트로 분할할 수 있게 해주는 기본적인 메커니즘이다.
+</p>
+
+```html
+<!-- index.html -->
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>React Example - James Joyce books</title>
+    </head>
+    <body>
+        <div id="main"></div>
+        <script src="dist/bundle.js"></script>
+    </body>
+</html>
+```
+
+<p>
+    위의 코드는 리액트 어플리케이션의 컨테이너 역활을 담당하는 id가 main인 div를 가지고 있는 일반 HTML 페이지에 bundle.js 파일을 추가한다. 이를 실행하여 사용자가 페이지를 로드할 때, 클라이언트 측 렌더링은 다음과 같이 동작한다.
+</p>
+
+1. 페이지의 HTML 코드가 브라우저에 의해 다운로드된 후 렌더링된다.
+2. 번들 파일이 다운로드되고 자바스크립트 내용이 평가된다.
+3. 평가된 코드는 페이지의 실제 내용을 동적으로 생성하여 DOM을 업데이트하여 표시한다.
+
+<p>
+    자바스크립트를 사용하지 않도록 설정한(예: 검색 엔진 봇) 브라우저에서 이 페이지를 로드할 경우, 웹 페이지는 별 내용을 가지지 않은 빈 웹 페이지처럼 보인다. 이는 SEO(Search Engine Optimization) 측면에서 심각한 문제일 수 있다.
+</p>
+
+### 4-5 리액트 라우터 라이브러리
+
+```javascript
+// src/components/authorsIndex.js
+const React = require('react');
+const Link = require('react-router').Link;
+
+const authors = [
+    {id: 1, name: 'James Joyce', slug: 'joyce'},
+    {id: 2, name: 'Herbert George Wells', slug: 'h-g-wells'}
+];
+
+class AuthorsIndex extends React.Component {
+    render() {
+        return (
+            <div>
+                <h1>List of authors</h1>
+                <ul>{
+                    authors.map(author =>
+                        <li key={author.id}>
+                            <Link to={`/author/${author.slug}`}>
+                                {author.name}
+                            </Link>
+                        </li>
+                    )
+                }</ul>
+            </div>
+        )
+    }
+}
+
+module.exports = AuthorsIndex;
+```
+
+<p>
+    위의 코드는 어플리케이션의 인덱스를 나타낸다. 단숨함을 유지하기 위해 이 컴포넌트를 렌더링하는데 필요한 데이터를 각 작가를 나타내는 일련의 배열 객체인 authors에게 저장한다. Link 컴포넌트는 리액트 라우터 라이브러리를 이용하며 앱의 영역들을 탐색할 수 있도록 클릭 가능한 링크를 렌더링한다. 여기서 Link의 to 속성은 링크를 클릭할 때 표시할 특정 라우트를 나타내는 상대 URI를 지정하는데 사용된다. 일반 a 태그와 크게 다르지 않으며, 단지 전체 페이지를 새로 고침하여 새 페이지로 이동하는 대신 리액트 라우터가 새로운 URI와 관련된 컴포넌트를 표시하기 위해 변경해야 하는 페이지의 부분을 동적으로 새로 고친다.
+</p>
+
+```javascript
+// src/joyceBooks.js
+
+const React = require('react');
+const Link = require('react-router').Link;
+
+const books = [
+    'Dubliners',
+    'A Portrait of the Artist as a Young Man',
+    'Exiles and poetry',
+    'Ulysses',
+    'Finnegans Wake'
+];
+
+class JoyceBooks extends React.Component {
+    render() {
+        return (
+            <div>
+                <h2>James Joyce's major works</h2>
+                <ul className="books">{
+                    books.map((book, key) => 
+                        <li className="book" key={key}>{book}</li>
+                    )
+                }</ul>
+                <Link to="/">Go back to index</Link>
+            </div>
+        );
+    }
+}
+
+module.exports = JoyceBooks;
+```
+
+<p>
+    위의 코드는 앞선 joyceBooks.js에서 링크를 추가하고 map 함수 내에서 key 어트리뷰트를 사용한 것이다. 마지막 변경을 통해 리액트에게 특정 엘리먼트가 고유한 키로 식별된다고 알리고 있다. 이를 통해 목록을 다시 렌더링해야 할 때마다 여러 가지 최적화를 수행할 수 있다. 이는 필수적이지는 않지만 대용량 어플리케이션의 경우 권장된다. 이와 유사하게 wellBooks.js나 notFound 컴포넌트를 작성할 수 있다.
+</p>
+
+```javascript
+const React = require('react');
+const ReactRouter = require('react-router');
+const Router = ReactRouter.Router;
+const Route = ReactRouter.Route;
+const hashHistory = ReactRouter.hashHistory;
+const AuthorsIndex = require('./components/authorsIndex');
+const JoyceBooks = require('./components/joyceBooks');
+const WellsBooks = require('./components/wellsBooks');
+const NotFound = require('./components/notFound');
+
+class Routes extends React.Component {
+    render() {
+        return (
+            <Router history={hashHistory}>
+                <Route path="/" component={AuthorsIndex}/>
+                <Route path="/author/joyce" component={JoyceBooks}/>
+                <Route path="/author/h-g-wells" component={WellsBooks}/>
+                <Route path="*" component={NotFound}/>
+            </Router>
+        )
+    }
+}
+
+module.exports = Routes;
+```
+
+<p>
+    라우터는 모든 라우팅 구성을 보유하는 핵심 컴포넌트이며, 라우트 컴포넌트들의 루트 노드로 사용하는 엘리먼트이다. history 속성은 사용자가 링크를 클릭할 때마다 브라우저 바의 URL을 업데이트하는 방법과 액티브 라우트를 탐지하는데 사용되는 메커니즘을 정의한다. 일반적으로 hashHistory와 browserHistory 두 가지 전략이 있다. hashHistory 전략을 사용하면 `index.html#/author/h-g-wells`로 표시된다. browserHistory 전략을 사용하면 `http://example.com/author/h-g-wells`와 같은 고유한 전체 URI를 가진다.
+</p>
+
+<p>
+    라우트 컴포넌트를 통해 경로와 컴포넌트 간의 연결을 정의할 수 있다. 이 컴포넌트는 경로가 일치할 경우 렌더링된다. 여기서 라우터 컴포넌트가 HTML과 같은 선언적인 구문과 함께 동작하는 방식을 이해해야 한다.
+</p>
+
+- 먼저 이 구문은 컨테이너의 역활을 한다. HTML 코드를 렌더링하지는 않지만 Route 정의 목록을 담는다.
+- 모든 라우트 정의는 컴포넌트와 연결된다. 예제의 컴포넌트는 그래픽 컴포넌트로, 페이지의 현재 URL 경로와 일치하는 경우에만 페이지의 HTML 코드로 렌더링된다는 것을 의미한다.
+- 특정 URI에 대해 단 하나의 라우트만 일치할 수 있다. 모호한 경우 라우터는 다음으로 포괄적인 경로를 선택하게 된다.
+- 다른 모든 경로가 일치하지 않는 경우를 위해서 *를 사용한 포괄 경로를 정의할 수 있다. 예제에서는 not found 메시지를 표시한다.

@@ -1,36 +1,24 @@
-const fnArgs = require('parse-fn-args');
+const React = require('react');
+const ReactRouter = require('react-router');
+const Router = ReactRouter.Router;
+const Route = ReactRouter.Route;
+const hashHistory = ReactRouter.hashHistory;
+const AuthorsIndex = require('./components/authorsIndex');
+const JoyceBooks = require('./components/joyceBooks');
+const WellsBooks = require('./components/wellsBooks');
+const NotFound = require('./components/notFound');
 
-module.exports = function() {
-    const dependencies = {};
-    const factories = {};
-    const diContainer = {};
-
-    diContainer.factory = (name, factory) => {
-        factories[name] = factory;
-    };
-
-    diContainer.register = (name, dep) => {
-        dependencies[name] = dep;
-    };
-
-    diContainer.get = (name) => {
-        if (!dependencies[name]) {
-            const factory = factories[name];
-            dependencies[name] = factory && diContainer.inject(factory);
-            if (!dependencies[name]) {
-                throw new Error('Cannot find module: ' + name);
-            }
-        }
-        return dependencies[name];
-      };
-      
-    diContainer.inject = (factory) => {
-        const args = fnArgs(factory)
-            .map(function(dependency) {
-                return diContainer.get(dependency);
-            });
-        return factory.apply(null, args);
-    };
-    
-    return diContainer;
+class Routes extends React.Component {
+    render() {
+        return (
+            <Router history={hashHistory}>
+                <Route path="/" component={AuthorsIndex}/>
+                <Route path="/author/joyce" component={JoyceBooks}/>
+                <Route path="/author/h-g-wells" component={WellsBooks}/>
+                <Route path="*" component={NotFound}/>
+            </Router>
+        )
+    }
 }
+
+module.exports = Routes;
