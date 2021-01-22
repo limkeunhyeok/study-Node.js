@@ -421,3 +421,216 @@ module.exports = Routes;
 - 모든 라우트 정의는 컴포넌트와 연결된다. 예제의 컴포넌트는 그래픽 컴포넌트로, 페이지의 현재 URL 경로와 일치하는 경우에만 페이지의 HTML 코드로 렌더링된다는 것을 의미한다.
 - 특정 URI에 대해 단 하나의 라우트만 일치할 수 있다. 모호한 경우 라우터는 다음으로 포괄적인 경로를 선택하게 된다.
 - 다른 모든 경로가 일치하지 않는 경우를 위해서 *를 사용한 포괄 경로를 정의할 수 있다. 예제에서는 not found 메시지를 표시한다.
+
+## 5. 범용 자바스크립트 앱 만들기
+
+> 범용 라우팅 및 렌더링을 추가하여 재사용 가능한 컴포넌트를 생성하고 범용 데이터를 탐색하는 앱
+
+### 5-1 재사용 가능한 컴포넌트 만들기
+
+```javascript
+// components/authorPage.js
+
+const React = require('react');
+const Link = require('react-router').Link;
+const AUTHORS = require('../authors');
+
+class AuthorPage extends React.Component {
+    render() {
+        const author = AUTHORS[this.props.params.id];
+        return (
+            <div>
+                <h2>{author.name}'s major works</h2>
+                <ul className="books">{
+                    author.books.map((book, key) =>
+                        <li key={key} className="book">{book}</li>
+                    )
+                }</ul>
+                <Link to="/">Go back to index</Link>
+            </div>
+        );
+    }
+}
+
+module.exports = AuthorPage;
+```
+
+<p>
+    앞선 예제들과 유사하나, 컴포넌트 내에서 데이터를 가져오는 방법과 표시할 저자를 나타내는 매개 변수를 받는 방법이 필요하다. 위 코드에선 author.js를 사용한다. 이 모듈은 간단한 데이터베이스로 사용할 저자에 대한 데이터가 들어있는 자바스크립트 객체를 반환한다. 변수 this.props.params.id는 표시해야 하는 저자의 식별자를 나타낸다. 이 매개 변수는 라우터에 의해 채워지며, 이를 사용함으로써 데이터베이스 객체에서 저자를 추출한 후 컴포넌트를 렌더링하는데 필요한 모든 정보가 만들어진다.
+</p>
+
+```javascript
+// author.js
+
+module.exports = {
+    'joyce': {
+        'name': 'James Joyce',
+        'books': [
+        'Dubliners',
+        'A Portrait of the Artist as a Young Man',
+        'Exiles and poetry',
+        'Ulysses',
+        'Finnegans Wake'
+        ]
+    },
+    'h-g-wells': {
+        'name': 'Herbert George Wells',
+        'books': [
+        'The Time Machine',
+        'The War of the Worlds',
+        'The First Men in the Moon',
+        'The Invisible Man'
+        ]
+    }
+};
+```
+
+<p>
+    author.js는 저자들을 니모닉(mnemonic: 연상 기호) 문자열 식별자로 색인화하는 매우 간단한 객체이다.
+</p>
+
+```javascript
+// route.js
+
+const React = require('react');
+const ReactRouter = require('react-router');
+const Router = ReactRouter.Router;
+const hashHistory = ReactRouter.hashHistory;
+const AuthorsIndex = require('./components/authorsIndex');
+const AuthorPage = require('./components/authorPage');
+const NotFound = require('./components/notFound');
+
+const routesConfig = [
+    {path: '/', component: AuthorsIndex},
+    {path: '/author/:id', component: AuthorPage},
+    {path: '*', component: NotFound}
+];
+
+class Routes extends React.Component {
+    render() {
+        return <Router history={hashHistory} routes={routesConfig}/>;
+    }
+}
+
+module.exports = Routes;
+```
+
+<p>
+    위의 코드는 일반화하여 재사용 가능한 새로운 AuthorPage 컴포넌트를 사용한다. routes 컴포넌트의 render 함수 내에 라우트 컴포넌트를 넣는 대신 일반 자바스크립트 배열을 사용하여 Route들을 정의한다. 그후 배열 객체는 Router 컴포넌트의 routes 속성에 전달된다. 여기서 중요한 변화는 `/author/:id` 형식의 경로이다. 이는 새로운 컴포넌트에 연결되며 이전에 지정한 저자에 대한 경로를 대체한다. 이 경로는 매개 변수를 표시하며, 이전의 경로인 `/author/joyce`와 `/author/h-g-wells`와 매치된다. id 매개 변수에 해당하는 문자열은 컴포넌트로 직접 전달된 것이며, 해당 컴포넌트는 props.params.id를 읽어 액세스할 수 있다.
+</p>
+
+### 5-2 서버 측 렌더링
+
+<p>
+    리액트의 또 다른 특징 중 하나는 서버 측에서도 컴포넌트를 렌더링할 수 있다는 것이다. 모든 컴포넌트는 이전 예제와 동일하며, 서버에서 라우팅 설정에 액세스해야 하므로 작업을 단순화하기 위해 routes.js 파일에서 reoutesConfig.js라는 전용 모듈로 라우팅 설정 객체(routesConfig)를 이관한다.
+</p>
+
+```javascript
+// src/routesConfig.js
+
+const AuthorsIndex = require('./components/authorsIndex');
+const AuthorPage = require('./components/authorPage');
+const NotFound = require('./components/notFound');
+
+const routesConfig = [
+    {path: '/', component: AuthorsIndex},
+    {path: '/author/:id', component: AuthorPage},
+    {path: '*', component: NotFound}
+];
+
+module.exports = routesConfig;
+```
+
+<p>
+    또한 ejs를 내부 템플릿 엔진으로 사용할 것이기 때문에 아래와 같이 변환한다.
+</p>
+
+```html
+<!-- views/index.ejs -->
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>React Example - Authors archive</title>
+</head>
+<body>
+    <div id="main">
+        <%- markup -%>
+    </div>
+    <!--<script src="dist/bundle.js"></script>-->
+</body>
+</html>
+```
+
+<p>
+    `<%- markup -%>` 태그는 페이지를 브라우저에 내보내기 전에 서버 측에서 렌더링할 리액트 콘텐츠로 동적으로 대치될 템플릿의 일부분이다.
+</p>
+
+```javascript
+// server.js
+
+const http = require('http');
+const Express = require('express');
+const React = require('react');
+const ReactDom = require('react-dom/server');
+const Router = require('react-router');
+const routesConfig = require('./src/routesConfig');
+
+const app = new Express();
+const server = new http.Server(app);
+
+app.set('view engine', 'ejs');
+
+app.get('*', (req, res) => {
+    Router.match(
+        {routes: routesConfig, location: req.url},
+        (error, redirectLocation, renderProps) => {
+            if (error) {
+                res.status(500).send(error.message)
+            } else if (redirectLocation) {
+                res.redirect(302, redirectLocation.pathname + redirectLocation.search)
+            } else if (renderProps) {
+                let markup = ReactDom.renderToString(<Router.RouterContext {...renderProps} />);
+                res.render('index', {markup});
+            } else {
+                res.status(404).send('Not found')
+            }
+        }
+    );
+});
+
+server.listen(3000, (err) => {
+    if (err) {
+        return console.error(err);
+    }
+    console.info('Server running on http://localhost:3000');
+});
+```
+
+<p>
+    위 코드에서 `app.get('*', (req, res) => {...})`은 서버의 모든 URL에 대해 GET request를 가로채라는 Express 함수이다. 이 route에서는 앞서 클라이언트 측 어플리케이션에서 설정한 라우팅 로직을 React Router에 위임한다.
+</p>
+
+<p>
+    서버에서 React Router를 적용하기 위해 Router.match 함수를 사용한다. 이 함수는 설정(configuration) 객체와 콜백 함수를 매개 변수로 받는다. 설정 객체에는 두 개의 키가 있어야 한다.
+</p>
+
+- routes: React Router의 경로 설정을 전달하는데 사용한다. 여기서는 클라이언트 측 렌더링에 사용한 설정과 완전히 동일한 설정을 전달한다(routesConfig).
+- location: 라우터가 앞서 정의된 경로들과 비교할 현재 요청된 URL을 지정하는데 사용된다.
+
+<p>
+    코ㅓㄹ백 함수는 경로가 일치할 경우 호출된다. 콜백은 error, redirectLocation, renderProps 세 개의 인자를 받는데, 이는 매치 연산의 결과가 정확히 무엇인지 결정하는데 사용된다. 여기서 처리해야 할 네 가지 경우가 존재한다.
+</p>
+
+1. 라우팅 해결(routing resolving) 중에 오류가 발생했을 경우이다. 이 경우에는 브라우저에 500번 내부 서버 오류 응답을 반환한다.
+2. 리다이렉션 경로와 일치하는 경우이다. 이 경우에는 브라우저에 새 대상으로 이동하도록 알리는 서버 리다이렉션 메시지(302)를 만들어야 한다.
+3. 경로와 일치하고 관련된 컴포넌트를 렌더링해야 하는 경우이다. 이 경우 renderProps 인자는 컴포넌트를 렌더링하는데 사용해야 하는 일부 데이터가 들어있는 객체이다. 이는 서버 측 라우팅 메커니즘의 핵심이며, ReactDOM.renderToString 함수를 사용하여 현재 일치하는 경로와 관련된 컴포넌트를 나타내는 HTML 코드를 렌더링할 수 있다. 그후 브라우저에 보낼 전체 HTML 페이지를 가져오기 위하여 앞서 정의한 index.ejs 템플릿에 결과 HTML을 주입한다.
+4. 경로가 일치하지 않는 경우로 404 not found 에러를 보낸다.
+
+<p>
+    ReactDOM.renderToString 함수의 동작은 다음과 같다.
+</p>
+
+- 이 함수는 모듈 react-dom/server에서 제공되며, React 컴포넌트를 문자열로 렌더링할 수 있다. HTML 코드를 서버에서 렌더링하여 즉시 브라우저로 전송하여 페이지 로드 시간을 단축하고 페이지를 SEO 친화적으로 만드는데 사용된다. `ReactDOM.render()`를 브라우저에 있는 동일한 컴포넌트에 대해 호출하면 react는 다시 렌더링하지 않고 이벤트 리스너를 기존 DOM 노드에 연결한다.
+- 렌더링할 컴포넌트는 RouterContext이며, 이 컴포넌트는 주어진 라우터 상태에 대한 컴포넌트 트리를 렌더링하는 작업을 담당한다. 예제에서 일련의 속성들을 이 컴포넌트에 전달하는데, 모두 renderProps 객체의 필드들이다. 이 객체를 확장하기 위해, 객체의 모든 키/값 쌍들을 컴포넌트 속성으로 추출하는 JSXspread attribute 연산자를 사용한다.
