@@ -558,7 +558,7 @@ module.exports = routesConfig;
     <div id="main">
         <%- markup -%>
     </div>
-    <!--<script src="dist/bundle.js"></script>-->
+    <script src="dist/bundle.js"></script>
 </body>
 </html>
 ```
@@ -634,3 +634,321 @@ server.listen(3000, (err) => {
 
 - 이 함수는 모듈 react-dom/server에서 제공되며, React 컴포넌트를 문자열로 렌더링할 수 있다. HTML 코드를 서버에서 렌더링하여 즉시 브라우저로 전송하여 페이지 로드 시간을 단축하고 페이지를 SEO 친화적으로 만드는데 사용된다. `ReactDOM.render()`를 브라우저에 있는 동일한 컴포넌트에 대해 호출하면 react는 다시 렌더링하지 않고 이벤트 리스너를 기존 DOM 노드에 연결한다.
 - 렌더링할 컴포넌트는 RouterContext이며, 이 컴포넌트는 주어진 라우터 상태에 대한 컴포넌트 트리를 렌더링하는 작업을 담당한다. 예제에서 일련의 속성들을 이 컴포넌트에 전달하는데, 모두 renderProps 객체의 필드들이다. 이 객체를 확장하기 위해, 객체의 모든 키/값 쌍들을 컴포넌트 속성으로 추출하는 JSXspread attribute 연산자를 사용한다.
+
+### 5-3 범용 렌더링 및 라우팅
+
+<p>
+    클라이언트 측 앱(main.js)에서 history 전략을 변경해야 하는데, 클라이언트와 서버 라우팅에서 정확히 동일한 URL이 필요하기 때문에 범용 렌더링에서는 이 hashHistory 전략은 잘 통하지 않는다.
+</p>
+
+```javascript
+// routes.js
+
+const React = require('react');
+const ReactRouter = require('react-router');
+const Router = ReactRouter.Router;
+const browserHistory = ReactRouter.browserHistory;
+const routesConfig = require('./routesConfig');
+
+class Routes extends React.Component {
+    render() {
+        return <Router history={browserHistory} routes={routesConfig}/>;
+    }
+}
+
+module.exports = Routes;
+```
+
+<p>
+    위의 코드는 앞선 예시에서 ReactRouter.browserHistory 함수를 사용하여 Router 컴포넌트에 전달하는 것으로 변경되었다.
+</p>
+
+```javascript
+// server.js
+
+...
+app.use('/dist', Express.static('dist'));
+...
+
+```
+
+<p>
+    서버에서 정적 리소스로 bundle.js 파일을 클라이언트에 제공할 수 있도록 서버 측 앱을 변경한다. Express.static 미들웨어를 사용하여 특정 경로의 폴더 내용을 정적 리소스들로 노출시켰다.
+</p>
+
+### 5-4 범용 데이터 조회
+
+<p>
+    앞서 예제에서 어느 한 모듈을 일종의 데이터베이스로 사용하고 있는데 다음과 같은 이유로 사용하였다.
+</p>
+
+- 앱 상의 어디에서나 JSON 파일을 공유하고, 프론트엔드, 백엔드 및 모든 리액트 컴포넌트에서 데이터를 직접 액세스한다.
+- 프론트엔드에서도 데이터에 액세스하려면, 결국 전체 데이터베이스를 프론트엔드 번들에도 넣어주어야 한다. 이는 실수로 민감한 정보가 노출될 수 있기 때문에 위험하며, 번들 파일이 데이터베이스가 커짐에 따라 커질 수 있으며, 데이터를 변경할 때마다 다시 컴파일해야 한다.
+
+#### API 서버
+
+```javascript
+const http = require('http');
+const Express = require('express');
+
+const app = new Express();
+const server = new http.Server(app);
+
+const AUTHORS = require('./src/authors');
+
+app.use((req, res, next) => {
+    console.log(`Received request: ${req.method} ${req.url} from ${req.headers['user-agent']}`);
+    next();
+});
+
+app.get('/authors', (req, res, next) => {
+    const data = Object.keys(AUTHORS).map(id => {
+        return {
+            'id': id,
+            'name': AUTHORS[id].name
+        };
+    });
+
+    res.json(data);
+});
+
+app.get('/authors/:id', (req, res, next) => {
+    if (!AUTHORS.hasOwnProperty(req.params.id)) {
+        return next();
+    }
+
+    const data = AUTHORS[req.params.id];
+    res.json(data);
+});
+
+server.listen(3001, (err) => {
+    if (err) {
+        return console.error(err);
+    }
+    console.info('API Server running on http://localhost:3001');
+});
+```
+
+- 데이터들은 여전히 JSON 파일(src/author.js)로 모듈에 있다. 이는 단숨함을 위해 사용되었으며 예제에서는 작동하지만 실제 시나리오에서는 데이터베이스로 교체되어야 한다. 이 예제에서는 필요한 JSON 객체에서 직접 데이터에 액세스하지만 실제 어플리케이션에서는 데이터를 읽을 때 외부 데이터 소스에 쿼리를 수행할 수 있을 것이다.
+- 요청을 받을 때마다, 유용한 정보를 콘솔에 인쇄하는 미들웨어를 사용한다. 나중에 이 로그가 API를 호출하는 사용자를 식별하고 전체 앱이 예상대로 작동하는지 확인하는데 도움이 될 것이다.
+- 사용 가능한 모든 저자를 포함하는 JSON 배열을 반환하는 URI/authors 경로에 대한 GET 메소드를 연다. 모든 저자에 대해 id와 name이 공개된다. 여기서도 데이터베이스로 사용하는 JSON 파일에서 직접 데이터를 추출한다. 실제 시나리오에서는 데이터베이스에 대한 쿼리를 여기서 수행하는 것이 좋을 것이다.
+- 또 다른 GET 메소드로 URI/authors/:id도 공개한다. 여기서 id는 데이터를 읽으려는 특정 저자의 ID를 가리키는 제너릭 플레이스 홀더(generic placeholder)이다. 지정된 ID가 유효하면 API는 저자의 이름과 책의 배열을 포함하는 객체를 반환한다.
+
+#### 프론트엔드에 대한 프록시 요청
+
+<p>
+    앞서 만든 API는 백엔드와 프론트엔드 모두에서 액세스할 수 있어야 한다. 프론트엔드는 AJAX 요청으로 API를 호출해야 한다. 3001번 포트에서 API 서버를 실행하고 3000번 포트에서 웹 서버를 실행하면 실제로 두 개의 다른 도메인을 사용하기 때문에 브라우저에서 해당 API를 직접 호출할 수가 없다. 이를 위해선 아래의 그림과 같이 내부에 임의의 경로를 사용하여 서버를 통해 API 서버에 접근하도록 프록시를 구성해야 한다.
+</p>
+
+![1](https://user-images.githubusercontent.com/38815618/105626162-7f994a80-5e71-11eb-91d9-6c8889a58178.PNG)
+
+#### 범용 API 클라이언트
+
+<p>
+    현재 환경에서 두 개의 서로 다른 접두사를 사용하여 API를 호출한다.
+</p>
+
+- 웹 서버에서 API를 호출할 때: http://localhost:3001
+- 브라우저에서 API를 호출할 때: /api
+
+<p>
+    또한 브라우저에는 비동기 HTTP 요청을 만들 수 있는 XHR/AJAX 메커니즘만 존재하는 반면, 서버에서는 request와 같은 라이브러리 혹은 내장 http 라이브러리를 사용해야 한다는 것을 고려해야 한다. 이를 위해 axios 라이브러리를 사용한다.
+</p>
+
+```javascript
+const Axios = require('axios');
+
+const baseURL = typeof window !== 'undefined' ? '/api' : 'http://localhost:3001';
+const xhrClient = Axios.create({baseURL});
+module.exports = xhrClient;
+```
+
+<p>
+    이 모듈에서는 기본적으로 브라우저 또는 웹 서버에서 코드를 실행 중인지 탐지하여 API 접두사를 설정하는데, 이를 위해 window 변수가 정의되어 있는지 확인한다. 그 후에 baseURL 값으로 Axios 클라이언트의 새 인스턴스를 내보낸다.
+</p>
+
+#### 비동기 React 컴포넌트
+
+```javascript
+const React = require('react');
+const Link = require('react-router').Link;
+const xhrClient = require('../xhrClient');
+
+class AuthorsIndex extends React.Component {
+    static loadProps(context, cb) {
+        xhrClient.get('authors')
+            .then(response => {
+                const authors = response.data;
+                cb(null, {authors});
+            })
+            .catch(error => cb(error))
+        ;
+    }
+
+    render() {
+        return (
+            <div>
+                <h1>List of authors</h1>
+                <ul>{
+                    this.props.authors.map(author =>
+                        <li key={author.id}>
+                            <Link to={`/author/${author.id}`}>{author.name}</Link>
+                        </li>
+                    )
+                }</ul>
+            </div>
+        )
+    }
+}
+
+module.exports = AuthorsIndex;
+```
+
+<p>
+    새로운 버전의 모듈에서는 원시 JSON 데이터가 들어있는 이전 모듈 대신 새로운 xhrClient가 필요하다. 그 후 컴포넌트 클래스에 loadProps라는 새 메소드를 추가한다. 이 메소드는 라우터에서 전달된 컨텍스트 파라미터들을 가진 객체와 콜백 함수를 인자로 받는다. 이 메소드 내에서 컴포넌트를 초기화하는데 필요한 데이터를 조회하기 위한 모든 비동기 작업을 수행할 수 있다. 모든 것이 로드되면 콜백 함수를 호출하여 데이터를 다음으로 전파하고 라우터에 컴포넌트가 준비되었음을 알린다.
+</p>
+
+```javascript
+const React = require('react');
+const Link = require('react-router').Link;
+const xhrClient = require('../xhrClient');
+
+class AuthorPage extends React.Component {
+    static loadProps(context, cb) {
+        xhrClient.get(`authors/${context.params.id}`)
+            .then(response => {
+                const author = response.data;
+                cb(null, {author});
+            })
+            .catch(error => cb(error))
+        ;
+    }
+
+    render() {
+        return (
+            <div>
+                <h2>{this.props.author.name}'s major works</h2>
+                <ul className="books">{
+                    this.props.author.books.map( (book, key) =>
+                        <li key={key} className="book">{book}</li>
+                    )
+                }</ul>
+                <Link to="/">Go back to index</Link>
+            </div>
+        );
+    }
+}
+
+module.exports = AuthorPage;
+```
+
+<p>
+    위의 코드는 앞선 코드와 유사하며, 차이점은 authors/:id API를 호출하고 라우터에서 전달된 context.parameters.id 변수에서 ID 파라미터를 가져온다는 것이다.
+</p>
+
+```javascript
+const React = require('react');
+const AsyncProps = require('async-props').default;
+const ReactRouter = require('react-router');
+const Router = ReactRouter.Router;
+const browserHistory = ReactRouter.browserHistory;
+const routesConfig = require('./routesConfig');
+
+class Routes extends React.Component {
+    render() {
+        return <Router
+            history={browserHistory}
+            routes={routesConfig}
+            render={(props) => <AsyncProps {...props}/>}
+        />;
+    }
+}
+
+module.exports = Routes;
+```
+
+<p>
+    비동기 컴포넌트를 올바르게 로드하려면 클라이언트와 서버 모두에 대한 경로 정의를 업데이트해야 한다. 위의 코드와 앞선 코드와의 차이점은 async-props 모듈을 사용한다는 것과 이를 사용하여 라우터 컴포넌트의 render 함수를 재정의한다는 점이다. 이 접근 방식은 실제로 라우터의 렌더링 로직 내에서 비동기 모듈의 로직을 가로채 비동기 처리에 대한 지원을 가능하게 한다.
+</p>
+
+#### 웹 서버
+
+```javascript
+const http = require('http');
+const Express = require('express');
+const httpProxy = require('http-proxy');
+const React = require('react');
+const AsyncProps = require('async-props').default;
+const loadPropsOnServer = require('async-props').loadPropsOnServer;
+const ReactDom = require('react-dom/server');
+const Router = require('react-router');
+const routesConfig = require('./src/routesConfig');
+
+const app = new Express();
+const server = new http.Server(app);
+
+const proxy = httpProxy.createProxyServer({
+    target: 'http://localhost:3001'
+});
+
+app.set('view engine', 'ejs');
+app.use('/dist', Express.static('dist'));
+app.use('/api', (req, res) => {
+    proxy.web(req, res);
+});
+
+app.get('*', (req, res) => {
+    Router.match({routes: routesConfig, location: req.url}, (error, redirectLocation, renderProps) => {
+        if (error) {
+            res.status(500).send(error.message)
+        } else if (redirectLocation) {
+            res.redirect(302, redirectLocation.pathname + redirectLocation.search)
+        } else if (renderProps) {
+            loadPropsOnServer(renderProps, {}, (err, asyncProps, scriptTag) => {
+                const markup = ReactDom.renderToString(<AsyncProps {...renderProps} {...asyncProps} />);
+                res.render('index', {markup, scriptTag});
+        });
+        } else {
+            res.status(404).send('Not found')
+        }
+    });
+});
+
+server.listen(3000, (err) => {
+    if (err) {
+        return console.error(err);
+    }
+    console.info('WebServer running on http://localhost:3000');
+});
+```
+
+<p>
+    위의 코드는 프록시 서버를 사용하여 클라이언트의 API 호출을 실제 API 서버로 리다이렉션하고 async-props 모듈을 사용하여 라우터를 렌더링하도록 웹 서버를 업데이트한다. 앞선 코드와 변경 사항은 다음과 같다.
+</p>
+
+- http-proxy와 asyncprops라는 새로운 모듈을 임포트해야 한다.
+- 프록시 인스턴스를 초기화하고 /api에 일치하는 요청에 매핑하기 위한 미들웨어를 통해 웹 서버에 추가한다.
+- 서버측 렌더링 로직을 일부 변경한다. 모든 비동기 데이터가 로드되었는지 확인해야 하기 때문에 renderToString 함수를 직접 호출할 수 없다. async-props 모듈인 이 목적을 위해 loadPropsOnServer 함수를 제공한다. 이 함수는 현재 일치하는 컴포넌트의 데이터를 비동기적으로 로드하는데 필요한 모든 로직을 실행한다. 로딩이 끝나면 콜백 함수가 호출되는데, 이 함수 내에서만 renderToString 메소드를 호출하는 것이 안전하다. 또한 RouterContext 대신 AsyncProps 컴포넌트를 렌더링하는데 JSX-spread 구문으로 동기 및 비동기 어트리뷰트들을 전달한다. 또 다른 중요한 사항은 콜백에서 scriptTag라는 인자도 받는다는 것이다. 이 변수에는 HTML 코드에 삽입해야 하는 일부 자바스크립트 코드가 포함된다. 이 코드에서 서버 측 렌더링 프로세스 중 로드된 비동기 데이터의 표현도 포함하고 있으므로, 브라우저가 이 데이터에 직접 액세스할 수 있어서 중복되게 API를 요청할 필요가 없다. 이 스크립트를 결과 HTML 코드에 삽입하기 위해 컴포넌트의 렌더링 프로세스에서 얻은 마크업과 함께 뷰로 전달한다.
+
+```html
+<!-- views/index.ejs -->
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>React Example - Authors archive</title>
+</head>
+<body>
+    <div id="main">
+        <%- markup -%>
+    </div>
+    <script src="dist/bundle.js"></script>
+    <%- scriptTag %>
+</body>
+</html>
+```
+
+<p>
+    index.ejs도 scriptTag 변수를 표시하도록 변경하면 끝이며, 실행한 뒤 localhost:3000에 접속하면 이전과는 다를 것이다.
+</p>
