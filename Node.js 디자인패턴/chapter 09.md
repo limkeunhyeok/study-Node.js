@@ -195,3 +195,237 @@ let activeState = notInitializedState;
 <p>
     위의 패턴은 많은 데이터베이스 드라이버와 ORM 라이브러리에서 사용된다. Mongoose는 MongoDB를 위한 ORM이다. Mongoose를 사용하면 쿼리를 보낼 수 있도록 데이터베이스 연결이 열릴 때까지 기다릴 필요가 없다. 각 작업을 큐에 넣은 다음 데이터베이스와 연결이 완전히 설정된 후에 나중에 실행되기 때문이다. 이는 API의 유용성을 향상시킨다.
 </p>
+
+## 2. 비동기 배치(일괄 처리) 및 캐싱
+
+### 2-1 캐싱 또는 일괄 처리가 없는 서버 구현
+
+<p>
+    예시로 만들 서버는 전자상거래 회사의 판매를 관리하는 웹 서버로, 특정 유형의 상품에 대한 모든 거래의 합계를 서버에 질의한다. 이를 위해 단순성과 유연성을 고려해 LevelUP을 사용한다. 키는 transactionId로 표시되며, 값은 판매액(금액)과 항목의 유형을 포함하는 JSON 개체이다.
+</p>
+
+```javascript
+// totalSales.js
+const level = require('level');
+const sublevel = require('level-sublevel');
+
+const db = sublevel(level('example-db', {valueEncoding: 'json'}));
+const salesDb = db.sublevel('sales');
+
+module.exports = function totalSales(item, callback) {
+    console.log('totalSales() invoked');
+    let sum = 0;
+    salesDb.createValueStream() // 1.
+        .on('data', data => {
+            if(!item || data.item === item) { // 2.
+                sum += data.amount;
+            }
+        })
+        .on('end', () => {
+            callback(null, sum); // 3.
+        });
+};
+```
+
+1. 판매 트랜잭션을 가진 salesDb sublevel로부터 스트림을 생성한다. 이 스트림은 데이터베이스에서 모든 항목을 가져온다.
+2. 데이터 이벤트는 데이터베이스 스트림에서 반환된 각 판매 거래를 수신한다. 현재 항목의 금액을 합계 값에 더하겠지만, 항목 유형이 입력에 제공된 것과 같은 경우에만 추가한다.
+3. 마지막으로 종료 이벤트가 수신되면 결과로 최종 합계를 전달하여 `callback()` 메소드를 호출한다.
+
+```javascript
+// app.js
+const http = require('http');
+const url = require('url');
+const totalSales = require('./totalSales');
+
+http.createServer((req, res) => {
+    const query = url.parse(req.url, true).query;
+    totalSales(query.item, (err, sum) => {
+        res.writeHead(200);
+        res.end(`Total sales for item ${query.item} is ${sum}`);
+    });
+}).listen(8000, () => console.log('Started'));
+```
+
+<p>
+    서버는 매우 단순하며, url 쿼리문을 통해 데이터가 전송된다.
+</p>
+
+### 2-2 비동기 요청 일괄 처리
+
+![1](https://user-images.githubusercontent.com/38815618/105928997-ff016680-6089-11eb-97ca-a3c15a2a0860.PNG)
+
+<p>
+    위의 그림은 동일한 입력을 사용하여 동일한 비동기 작업을 호출하는 두 개의 클라이언트를 보여준다. 이 상황을 해결하는 자연스러운 방법은 두 클라이언트가 서로 다른 순간에 완료될 두 개의 별도 작업자를 시작하는 것이다.
+</p>
+
+![2](https://user-images.githubusercontent.com/38815618/105928999-00329380-608a-11eb-8ba6-708870bbdb44.PNG)
+
+<p>
+    위의 그림은 같은 입력으로 동일한 API를 호출하는 두 요청을 일괄 처리하거나 다른 실행 중인 작업자에 추가하는 방법이다. 작업이 완료되면 두 클라이언트에게 모두 알릴 수 있으며, 이는 대개 적절한 메모리 관리와 무효화 전략이 필요한 복잡한 캐싱 메커니즘을 처리하지 않고도 어플리케이션의 부하를 최적화할 수 있는 간단하지만 매우 강력한 방법을 보여준다.
+</p>
+
+#### 총 판매 조회 웹 서버에서 일괄 처리 요청
+
+```javascript
+// totalSalesBatch.js
+const totalSales = require('./totalSales');
+
+const queues = {};
+module.exports = function totalSalesBatch(item, callback) {
+    if(queues[item]) {  // 1.
+        console.log('Batching operation');
+        return queues[item].push(callback);
+    }
+  
+    queues[item] = [callback];  // 2.
+    totalSales(item, (err, res) => {
+        const queue = queues[item];  // 3.
+        queues[item] = null;
+        queue.forEach(cb => cb(err, res));
+    });
+};
+```
+
+1. 입력으로 제공되는 항목 유형에 대한 대기열이 이미 있으면, 해당 항목에 대한 요청이 이미 실행 중임을 의미한다. 이 경우 단순히 기존 큐에 콜백을 추가하고 즉시 호출에서 복귀해야 한다. 그 외의 것은 필요하지 않다.
+2. 항목에 대한 것이 정의된 큐에 없으면 새 요청을 작성해야 함을 의미한다. 이를 위해 특정 항목에 대한 새로운 대기열을 만들고 현재 콜백 함수로 초기화한다. 그후 원래의 `totalSales()` API를 호출한다.
+3. 원래 `totalSales()` 요청이 완료되면 해당 특정 항목에 대한 큐에 추가된 모든 콜백을 반복하여 작업 결과를 가지고 하나씩 호출한다.
+
+<p>
+    `totalSalesBatch()` 함수의 동작은 원래의 `totalSales()` API의 동작과 동일하다. 동일한 입력을 사용하는 API에 대한 여러 번의 호출이 일괄 처리되므로 시간과 리소스가 절약된다. app.js의 totalSales 모듈을 수정하고, 실행하면 먼저 요청이 일괄적으로 반환되며, 기존의 테스트보다 최소 4배 더 빠르다.
+</p>
+
+### 2-3 비동기 요청 캐싱
+
+<p>
+    요청의 일괄 처리 패턴의 문제점 중 하나는 API가 빠를수록 일괄 처리 요청의 수가 줄어든다는 것이다. API가 충분히 빠르면 최적화를 시도할 필요가 없다고 할 수도 있지만, 여전히 어플리케이션의 리소스 로드에 있어 합산을 한다면 상당한 영향을 미칠 수 있는 요인이 있음을 보여준다. 또한 때로는 API 호출의 결과가 자주 변경되지 않는다고 가정할 수도 있다. 이 경우 간단한 요청의 일괄 처리는 최상의 성능을 제공하지 못한다. 이러한 모든 상황에서 어플리케이션의 로드를 줄이고 응답 속도를 높이고자 한다면, 캐싱 패턴이 가장 좋다.
+</p>
+
+<p>
+    캐싱 패턴은 요청이 완료되자마자 결과를 캐시에 저장한다. 캐시의 결과를 바로 변수, 데이터베이스 항목 또는 특수 캐싱 서버에 저장한다. 따라서 다음 번에 API를 호출할 때, 다른 요청을 생성하는 대신 캐시에서 즉시 결과를 검색할 수 있다. 비동기 프로그래밍에서 캐싱 패턴은 최적화를 위해 요청 일괄 처리와 결합되어야 한다. 캐시가 아직 설정되지 않은 상태에서 여러 요청이 동시에 실행될 수 있고, 이러한 요청이 모두 완료될 때 캐시가 여러 번 설정될 수 있기 때문이다.
+</p>
+
+![3](https://user-images.githubusercontent.com/38815618/105929000-00cb2a00-608a-11eb-865b-5b30ff6759ea.PNG)
+
+<p>
+    위의 그림은 최적의 비동기 캐싱 알고리즘을 위한 두 개의 단계를 보여준다. 비동기 API를 사용하고 있으므로 비록 캐시와 관련된 처리들이 동기적이라 할지라도 캐시된 값은 항상 비동기적으로 반환해야 한다.
+</p>
+
+- 첫 번째 단계는 일괄처리 패턴과 완전히 동일하다. 캐시가 설정되지 않은 동안 수신된 요청은 함께 일괄 처리된다. 요청이 완료되면 캐시가 한 번 설정된다.
+- 캐시 설정이 완료되면 이후의 모든 요청이 캐시에서 직접 제공된다.
+
+#### 총 판매 조회 웹 서버에서 요청 캐싱
+
+```javascript
+// totalSalesCache.js
+const totalSales = require('./totalSales');
+
+const queues = {};
+const cache = {};
+
+module.exports = function totalSalesBatch(item, callback) {
+    const cached = cache[item];
+    if (cached) {
+        console.log('Cache hit');
+        return process.nextTick(callback.bind(null, null, cached));
+    }
+  
+    if (queues[item]) {
+        console.log('Batching operation');
+        return queues[item].push(callback);
+    }
+    
+    queues[item] = [callback];
+    totalSales(item, (err, res) => {
+        if (!err) {
+            cache[item] = res;
+            setTimeout(() => {
+                delete cache[item];
+            }, 30 * 1000);
+        }
+        
+        const queue = queues[item];
+        queues[item] = null;
+        queue.forEach(cb => cb(err, res));
+    });
+};
+```
+
+<p>
+    앞선 비동기 일괄 처리와 유사하며 차이점은 다음과 같다.
+</p>
+
+- API가 호출될 때 가장 먼저 해야 할 일은 캐시에 설정되어 있는지를 확인하는 것이다. 캐시에 존재할 경우 캐시된 값을 `callback()`을 사용하여 즉시 반환하는데, `process.nextTick()`을 사용해 지연시킨다.
+- 실행은 일괄 처리 모드에서 계속되지만 이번에는 원래 API가 성공적으로 완료되면 결과를 캐시에 저장한다. 또한 30초 후에 캐시가 무효화 되도록 제한 시간을 설정한다.
+
+<p>
+    app.js를 수정하여 실행하면 일괄처리와 비교할 때 시간이 10% 단축되는 것을 알 수 있다.
+</p>
+
+#### 캐싱 메커니즘 구현에 대한 참고 사항
+
+- 캐시된 값이 많으면 쉽게 많은 메모리를 소비할 수 있다. 이 경우 LRU(Least Recently Used) 알고리즘을 사용하여 메모리 사용률을 일정하게 유지할 수 있다.
+- 어플리케이션이 여러 프로세스에 분산되어 있는 경우, 캐시에 간단한 변수를 사용하게 되면 각 서버 인스턴스에서 다른 결과가 반환될 수 있다. 구현하려는 특정 어플리케이션에 바람직하지 않은 경우, 해결 방안은 캐시에 공유 저장소를 사용하는 것이다. 가장 널리 사용되는 솔루션은 Redis와 Memcached이다.
+- 시간 제한 만료와 달리 수동 캐시 무효화를 사용하면 캐시 수명을 늘리고 동시에 최신 데이터를 제공할 수 있지만, 관리가 훨씬 더 복잡해진다.
+
+### 2-4 프라미스를 사용한 일괄처리와 캐싱
+
+<p>
+    프라미스를 유익하게 이용할 수 있는 두 가지 특성이 있다.
+</p>
+
+- 다수의 리스너를 동일한 프라미스에 붙일 수 있다.
+- `then()` 리스너는 한번만 호출할 수 있으며, 프라미스가 이미 해결된 후에도 연결되어 작동한다. 게다가 `then()`은 항상 비동기적으로 호출된다.
+
+<p>
+    첫 번째 특성은 요청을 일괄 처리하는데 필요한 것이며, 두 번째 특징은 해결된 값에 대한 캐시를 의미하여 일관된 비동기 방식으로 캐시된 값을 반환하는 자연스러운 메커니즘을 제공한다. 이는 프라미스를 사용하면 일괄 처리와 캐싱이 매우 단순하고 간결하다는 것을 의미한다.
+</p>
+
+```javascript
+// totalSalesPromises.js
+const pify = require('pify'); // 1.
+const totalSales = pify(require('./totalSales'));
+
+const cache = {};
+module.exports = function totalSalesPromises(item) {
+    if (cache[item]) { // 2.
+        return cache[item];
+    }
+
+    cache[item] = totalSales(item) // 3.
+        .then(res => { // 4.
+            setTimeout(() => {delete cache[item]}, 30 * 1000);
+            return res;
+        })
+        .catch(err => { // 5.
+            delete cache[item];
+            throw err;
+        });
+    return cache[item]; // 6.
+};
+```
+
+1. 먼저 원래 `totalSales()`에 프라미스를 적용하기 위해 pify라는 모듈을 사용했다. 이를 사용하면 `totalSales()`는 콜백 대신 ES2015 프라미스를 반환한다.
+2. `totalSalesPromises()` 래퍼가 호출될 때 주어진 항목 유형에 대해 캐시된 프라미스가 이미 존재하는지 체크한다. 이미 그런 프라미스가 존재한다면, 그것을 다시 호출자에게 반환한다.
+3. 주어진 항목 유형에 대한 캐시에 프라미스가 없으면 원래 `totalSales()` API를 호출하여 프라미스를 만든다.
+4. 프라미스가 해결되면 캐시는 지우는 시간을 설정하고 프라미스를 listen하고 있는 모든 then 리스너에 작업 결과를 전파하기 위해 res를 반환한다.
+5. 프라미스가 오류로 거부되면 즉시 캐시를 재설정하고 오류를 던져 프라미스 체인에 전파하므로 동일한 프라미스에 연결된 다른 모든 리스너들도 오류를 수신할 수 있다.
+6. 끝을로 방금 만든 캐시된 프라미스를 반환한다.
+
+```javascript
+// appPromises.js
+const http = require('http');
+const url = require('url');
+const totalSales = require('./totalSalesPromises');
+
+http.createServer(function(req, res) {
+    const query = url.parse(req.url, true).query;
+    totalSales(query.item).then(function(sum) {
+        res.writeHead(200);
+        res.end(`Total sales for item ${query.item} is ${sum}`);
+    });
+}).listen(8000, function() {console.log('Started')});
+```
+
+<p>
+    기존의 app.js와 유사하나 프라미스 기반의 일괄 처리/캐싱 래퍼를 사용한다는 점에서 차이가 있다.
+</p>
