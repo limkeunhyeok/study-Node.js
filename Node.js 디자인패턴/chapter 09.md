@@ -429,3 +429,160 @@ http.createServer(function(req, res) {
 <p>
     기존의 app.js와 유사하나 프라미스 기반의 일괄 처리/캐싱 래퍼를 사용한다는 점에서 차이가 있다.
 </p>
+
+## 3. CPU 바운딩(CPU-bound) 작업 실행
+
+> 이벤트 루프를 제어하지 못하는 긴 동기식 작업을 I/O 작업이 많지 않고 CPU의 사용량이 많다는 특징 때문에 CPU 바운딩이라고 한다.
+
+### 3-1 부분 집합의 합 문제 해결
+
+<p>
+    대표적인 문제로 어떤 정수 집합 내에 총 합이 0인 비어있지 않은 부분 집합이 있는지 확인하는 문제가 있다. 예를 들어 집합 [1, 2, -4, 5, -3]을 입력으로 하면, 만족하는 부분 집합은 [1, 2, -3]과 [2, -4, 5, -3]이 있다.
+</p>
+
+<p>
+    이를 위한 가장 단순한 알고리즘은 모든 조합 가능한 부분 집합들을 검사하는 것인데, 이는 계산 비용이 O(2n)이거나 입력에 따라 기하급수적으로 커진다. 20개의 정수로 구성된 집합을 검사할 때 최대 1,048,576개의 조합이 필요하며, 예시를 구현하여 시험하는데는 나쁘지 않은 예시이다. 따라서 어렵게 만들기 위해 주어진 sum 변수와 같은 가능한 모든 조합을 계산한다.
+</p>
+
+```javascript
+// subsetSum.js - 1
+const EventEmitter = require('events').EventEmitter;
+
+class SubsetSum extends EventEmitter {
+    constructor(sum, set) {
+        super();
+        this.sum = sum;
+        this.set = set;
+        this.totalSubsets = 0;
+    }
+// ...
+```
+
+<p>
+    SubsetSum 클래스는 EventEmitter 클래스에서 확장되며, 입력으로 받은 합계와 일치하는 새 부분 집합을 찾을 때마다 이벤트를 생성할 수 있다.
+</p>
+
+```javascript
+// subsetSum.js - 2
+ _combine(set, subset) {
+    for(let i = 0; i < set.length; i++) {
+        let newSubset = subset.concat(set[i]);
+        this._combine(set.slice(i + 1), newSubset);
+        this._processSubset(newSubset);
+    }
+}
+```
+
+- `_combine()` 메소드는 완전한 동기식이다. 이벤트 루프에 제어권을 되돌려 주지 않고 모든 조합 가능한 부분 집합들을 재귀적으로 생성한다. I/O를 필요로 하지 않는 알고리즘의 경우로는 알맞은 경우이다.
+- 새로운 조합이 생성될 때마다 `_processSubset()` 메소드에 추가적인 처리를 위해 전달된다.
+
+```javascript
+// subsetSum.js - 3
+_processSubset(subset) {
+    console.log('Subset', ++this.totalSubsets, subset);
+    const res = subset.reduce((prev, item) => (prev + item), 0);
+    if(res == this.sum) {
+        this.emit('match', subset);
+    }
+}
+```
+
+<p>
+    `_processSubset()` 메소드는 해당 요소의 합을 계산하기 위해 부분 집합에 reduce 연산을 적용한다. 그 후 결과 합계가 우리가 찾고자 하는 것과(this.sum) 같을 때 'match' 이벤트를 내보낸다.
+</p>
+
+```javascript
+// subsetSum.js - 4
+start() {
+    this._combine(this.set, []);
+    this.emit('end');
+}
+```
+
+<p>
+    `start()` 메소드는 `_combine()`을 호출하여 모든 조합을 생성하는 작업을 시키고, 끝으로 모든 조합이 검사되었으며 모든 예상되는 일치 결과가 emit되었음을 알리는 'end' 이벤트를 내보낸다. 따라서 함수가 반환되자마자 'end' 이벤트가 발생하므로 모든 조합이 계산되었음을 의미한다.
+</p>
+
+```javascript
+// app.js
+const http = require('http');
+const SubsetSum = require('./subsetSum');
+
+http.createServer((req, res) => {
+    const url = require('url').parse(req.url, true);
+    if (url.pathname === '/subsetSum') {
+        const data = JSON.parse(url.query.data);
+        res.writeHead(200);
+        const subsetSum = new SubsetSum(url.query.sum, data);
+        subsetSum.on('match', match => {
+            res.write('Match: ' + JSON.stringify(match) + '\n');
+        });
+        subsetSum.on('end', () => res.end());
+        subsetSum.start();
+    } else {
+        res.writeHead(200);
+        res.end('I\m alive!\n');
+    }
+}).listen(8000, () => console.log('Started'));
+```
+
+<p>
+    SubsetSum 알고리즘을 호출하는 URL을 /subsetSum?data?=`Array`&sum=`Integer` 형식으로 구현하였다. 또 다른 세부 항목은 서버가 /subsetSum이 아닌 다른 URL을 누를 때마다 텍스트로 응답하는 것이다.
+</p>
+
+### 3-2 setImmediate를 사용한 인터리빙
+
+<p>
+    이전의 subsetSum.js를 약간 수정하여 subsetSumDefer.js를 생성한다.
+</p>
+
+```javascript
+_combineInterleaved(set, subset) {
+    this.runningCombine++;
+    setImmediate(() => {
+        this._combine(set, subset);
+        if(--this.runningCombine === 0) {
+            this.emit('end');
+        }
+    });
+}
+```
+
+<p>
+    `setImmediate()`를 사용하여 원본(동기) `_combine()` 메소드 호출을 연기한다. 하지만 알고리즘이 더 이상 동기화되지 않기 때문에 함수가 언제 모든 조합의 생성을 완료했는지 알기가 어려워진다. 이를 위해 `combine()` 메소드의 모든 인스턴스가 실행을 완료하면 프로세스가 완료되었다는 것을 리스너에게 알리는 end 이벤트를 내보낸다.
+</p>
+
+```javascript
+_combine(set, subset) {
+    for(let i = 0; i < set.length; i++) {
+        let newSubset = subset.concat(set[i]);
+        this._combineInterleaved(set.slice(i + 1), newSubset);
+        this._processSubset(newSubset);
+    }
+}
+```
+
+<p>
+    기존의 `_combine()` 메소드의 재귀적 단계를 지연된 단계로 교체한다. 알고리즘의 각 단계가 동기적으로 실행되는 대신 `setImmediate()`를 사용하여 이벤트 루프에서 대기열에 추가되고, 보류중인 I/O 요청의 실행 후에 실행되도록 한다.
+</p>
+
+```javascript
+start() {
+    this.runningCombine = 0;
+    this._combineInterleaved(this.set, []);
+}
+```
+
+<p>
+    `start()` 메소드는 `_combine()` 메소드의 실행 인스턴스의 수를 0으로 초기화하고, `combineInterleaved()`로 대체하며, end 이벤트 발생을 제거한다. 이후에 app.js에서 새 모듈로 수정한다.
+</p>
+
+#### 인터리빙 패턴에 대한 고려 사항
+
+<p>
+    대기중인 입출력 다음에 알고리즘의 다음 단계를 예약하기 위해서는 `setImmedidate()`를 사용해야 한다. 하지만 이것이 효율성 측면에서 최고의 패턴은 아니다. 실제로 작업을 지연하면 알고리즘이 실행해야 하는 모든 단계를 곱한 작은 오버헤드가 발생하며, 이는 중요한 영향을 미칠 수 있다. 이는 일반적으로 CPU 바운드 작업을 실행하고자 할 때 마지막으로 처리해야 하는 작업이다. 특히 사용자에게 결과를 직접 반환해야 하는 경우에는 적절한 시간 내에 처리를 해야 한다. 문제를 완화할 수 있는 가능한 해결책은 `setImmedidate()`를 매 단계마다 사용하는 대신, 특정 단계 후에만 사용하는 것이다. 하지만 문제의 근원은 해결되지 않는다.
+</p>
+
+<p>
+    앞선 예시의 패턴이 꼭 피해야 한다는 것을 의미하지는 않는다. 사용량이 많은 서버에서는 이벤트 루프를 200밀리 초 동안 차단하는 작업조차도 원치 않는 지연을 만들어 낼 수 있다. 작업이 산발적으로 또는 백그라운드에서 실행되고 너무 오랫동안 실행하지 않아도 되는 상황에서는 `setImmedidate()`를 사용하여 실행을 인터리브하는 것이 이벤트 루프를 차단하는 것을 피하는 가장 간단하고 효과적인 방법이다.
+</p>
