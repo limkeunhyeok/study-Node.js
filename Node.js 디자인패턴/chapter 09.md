@@ -586,3 +586,181 @@ start() {
 <p>
     앞선 예시의 패턴이 꼭 피해야 한다는 것을 의미하지는 않는다. 사용량이 많은 서버에서는 이벤트 루프를 200밀리 초 동안 차단하는 작업조차도 원치 않는 지연을 만들어 낼 수 있다. 작업이 산발적으로 또는 백그라운드에서 실행되고 너무 오랫동안 실행하지 않아도 되는 상황에서는 `setImmedidate()`를 사용하여 실행을 인터리브하는 것이 이벤트 루프를 차단하는 것을 피하는 가장 간단하고 효과적인 방법이다.
 </p>
+
+### 3-3 멀티 프로세스 사용
+
+<p>
+    이벤트 루프를 막지 못하도록 하는 또 다른 패턴은 자식 프로세스를 사용하는 것이다. Node.js에서는 웹 서버와 같은 I/O 집약적인 어플리케이션을 실행할 때 최상의 성능을 제공하는 비동기식 아키텍처 덕분에 리소스 사용률을 최적화할 수 있다. 어플리케이션의 응답성을 유지하는 가장 좋은 방법은 값비싼 CPU 관련 작업을 기본 어플리케이션의 컨텍스트에서 실행하지 않고 대신 별도의 프로세스를 사용하는 것이다. 이에 세 가지 주요 장점이 있다.
+</p>
+
+- 동기화 작업의 실행 단계를 인터리빙할 필요 없이 최대 속도로 실행될 수 있다.
+- Node.js의 프로세스로 작업하는 것은 간단하다. 알고리즘을 수정하여 `setImmediate()`를 사용하는 것보다 쉬우며, 메인 어플리케이션 자체를 확장할 필요 없이 다중 프로세서를 쉽게 사용할 수 있다.
+- 최고의 성능이 필요하다면, ANSI C와 같은 저 수준 언어로 작성된 외부 프로세스를 실행할 수도 있다.
+
+<p>
+    Node.js는 외부 프로세스와 상호작용 할 수 있는 일련의 API 도구들을 제공한다. child_process 모듈에서 필요한 것을 찾을 수 있으며, 외부 프로세스가 Node.js 프로그램일 때 메인 어플리케이션에 연결하는 것처럼 매우 쉽다. 이는 `child_process.fork()` 함수를 이용하여 만들며, 새로운 child Node.js 프로세스를 생성하고 자동으로 통신 채널을 생성하여 EventEmitter와 매우 유사한 인터페이스를 사용하여 정보를 교환할 수 있도록 한다.
+</p>
+
+#### 부분 집합 합계 작업을 다른 프로세스에 위임
+
+- processPool.js라는 새로운 모듈을 만들어 실행 중인 프로세스 풀을 생성한다. 새로운 프로세스를 시작하기 위해서는 많은 비용과 시간이 필요하며, 프로세스를 지속적으로 실행하고 요청을 처리할 준비가 미리 되어 있다면 시간과 CPU를 절약할 수 있다. 또한 Pool은 어플리케이션이 서비스 거부(DoS) 공격에 노출되지 않도록 동시에 실행되는 프로세스 수를 제한하는데 도움이 된다.
+- 다음으로 자식 프로세스에서 실행중인 SubsetSum 작업을 추상화하는 subsetSumFork.js라는 모듈을 작성한다. 그 역활은 자식 프로세스와 통신하고 현재 어플리케이션에서 한 것처럼 작업 결과를 표시한다.
+- 마지막으로 하위 집합 합계 알고리즘을 실행하고 그 결과를 부모 프로세스로 전달하는 목적으로 새로운 Node.js 프로그램인 작업자(Worker, 자식 프로세스)가 필요하다.
+
+##### 프로세스 풀 구현
+
+```javascript
+// processPool.js - 1
+const fork = require('child_process').fork;
+
+class ProcessPool {
+    constructor(file, poolMax) {
+        this.file = file;
+        this.poolMax = poolMax;
+        this.pool = [];
+        this.active = [];
+        this.waiting = [];
+    }
+// ...
+```
+
+- pool: 사용할 준비가 된 실행중인 프로세스 집합
+- active: 현재 사용중인 프로세스 목록을 표시
+- waiting: 사용 가능한 프로세스가 부족하여 즉시 수행할 수 없는 모든 요청에 대한 콜백 큐
+
+```javascript
+// processPool.js - 2
+acquire(callback) {
+    let worker;
+    if(this.pool.length > 0) { // 1.
+        worker = this.pool.pop();
+        this.active.push(worker);
+        return process.nextTick(callback.bind(null, null, worker));
+    }
+
+    if(this.active.length >= this.poolMax) { // 2.
+        return this.waiting.push(callback);
+    }
+
+    worker = fork(this.file); // 3.
+    this.active.push(worker);
+    process.nextTick(callback.bind(null, null, worker));
+}
+```
+
+<p>
+    이 메소드는 사용할 준비가 된 프로세스를 반환한다.
+</p>
+
+1. 풀에서 사용할 준비가 된 프로세스가 있으면 활성 목록으로 이동한 다음, 콜백을 호출하여 반환한다.
+2. 풀에 사용 가능한 프로세스가 없고 실행중인 프로세스의 최대 수에 도달했으면 사용할 수 있을 때까지 기다려야 한다. 현재 콜백을 대기 목록들이 들어 있는 큐에 넣음으로써 이 작업을 수행한다.
+3. 실쟁 중인 프로세스의 최대 수에 아직 도달하지 않은 경우, `child_process.fork()`를 사용하여 새로운 프로세스를 만들고 활성 목록에 추가한 후 콜백을 사용하여 호출자에게 반환한다.
+
+```javascript
+// processPool.js - 3
+release(worker) {
+        if(this.waiting.length > 0) { // 1.
+            const waitingCallback = this.waiting.shift();
+            waitingCallback(null, worker);
+        }
+        this.active = this.active.filter(w => worker !==  w); // 2.
+        this.pool.push(worker);
+    }
+```
+
+<p>
+    이 메소드는 프로세스를 다시 풀에 넣는다.
+</p>
+
+1. waiting 목록에 요청이 있는 경우 해당 작업자를 waiting 대기열의 맨 앞에 있는 콜백에 재할당하여 제거한다.
+2. 그렇지 않으면 작업 목록에서 작업자를 제거하고 다시 풀에 넣는다.
+
+<p>
+    장기간 메모리 사용을 줄이고 프로세스 풀의 견고성을 확보하기 위해 가능한 조치는 다음과 같다.
+</p>
+
+- 일정 시간 동안 사용하지 않으면 유휴 프로세스를 종료하여 메모리를 비운다.
+- 반응이 없는 프로세스를 죽이거나 에러가 난 프로세스는 다시 시작시킨다.
+
+##### 자식 프로세스와 통신하기
+
+```javascript
+// subsetSumFork.js
+const EventEmitter = require('events').EventEmitter;
+const ProcessPool = require('./processPool');
+const workers = new ProcessPool(__dirname + '/subsetSumWorker.js', 2);
+
+class SubsetSumFork extends EventEmitter {
+    constructor(sum, set) {
+        super();
+        this.sum = sum;
+        this.set = set;
+    }
+
+    start() {
+        workers.acquire((err, worker) => { // 1.
+        worker.send({sum: this.sum, set: this.set});
+
+        const onMessage = msg => {
+            if (msg.event === 'end') { // 3.
+                worker.removeListener('message', onMessage);
+                workers.release(worker);
+            }
+
+            this.emit(msg.event, msg.data); // 4.
+        };
+
+        worker.on('message', onMessage); // 2.
+        });
+    }
+}
+
+module.exports = SubsetSumFork;
+```
+
+<p>
+    위의 코드는 Worker와 통신하여 생성된 결과를 알려주는 역활을 수행할 SubsetSumFork 래퍼를 구현한 것이다. 자식 작업자로 subsetSumWorker.js라는 파일을 사용하여 프로세스 풀 객체를 초기화하였고, 풀의 최대 용량도 2로 설정하였다. 또한 SubsetSum 클래스와 동일한 공용 API를 유지하려고 하고 있다. SubsetSumFork는 sum과 set을 인자로 받는 생성자를 가진 EventEmitter이며, `start()` 메서드는 별도의 프로세스에서 실행되어 알고리즘의 실행을 시작시킨다. 다음은 `start()` 메서드가 호출되면 발생하는 일이다.
+</p>
+
+1. pool에서 새로운 자식 프로세스를 얻는다. 이 일이 발생하면 즉시 작업자 핸들을 사용하여 자식 프로세스들이 실행할 작업과 함께 메시지를 보낸다. `send()` API는 Node.js에 의해 `child_process.fork()`로 시작하는 모든 프로세스에 자동으로 제공된다. 본질적으로 이것이 통신 채널이다.
+2. `on()` 메서드를 사용하여 새로운 리스너를 연결하여 작업자 프로세스에서 반환된 메시지를 수신하기 시작한다. 
+3. 리스너에서 먼저 end 이벤트를 수신했는지 여부를 확인한다. 즉, SubsetSum 작업이 완료되면 onMessage 리스너를 제거하고 작업자를 해제하여 pool에 다시 넣는다.
+4. 작업자는 {event, data} 형식으로 메시지를 생성하여 자식 프로세스에서 생성된 모든 이벤트를 매끄럽게 지속적으로 발생시킬 수 있도록 한다.
+
+##### 부모 프로세스와 통신
+
+```javascript
+// subsetSumWorker.js
+const SubsetSum = require('./subsetSum');
+
+process.on('message', msg => { // 1.
+    const subsetSum = new SubsetSum(msg.sum, msg.set);
+    
+    subsetSum.on('match', data => { // 2.
+        process.send({event: 'match', data: data});
+    });
+  
+    subsetSum.on('end', data => {
+        process.send({event: 'end', data: data});
+    });
+    
+    subsetSum.start();
+});
+```
+
+<p>
+    작업자가 자식 프로세스로 시작되면 다음과 같은 일이 일어난다.
+</p>
+
+1. 부모 프로세스의 메시지 수신을 즉시 시작한다. 이는 `process.on()` 함수를 사용하여 쉽게 수행할 수 있다. 부모 프로세스로부터 기대하는 유일한 메시지는 새로운 SubsetSum 작업에 입력으로 제공할 정보이다. 그러한 메시지가 수신되자마자 SubsetSum 클래스의 새로운 인스턴스를 만들고 match 및 end 이벤트에 대한 리스너를 등록한다. 마지막으로 `subsetSum.start()`로 연산을 시작한다.
+2. 실행중인 알고리즘에서 이벤트를 수신할 때마다 {event, data} 형식의 객체에 래핑하여 부모 프로세스에 전달한다. 이 메시지는 subsetSumFork.js 모듈에서 처리된다.
+
+#### 멀티 프로세스 패턴에 대한 고려 사항
+
+<p>
+    app.js를 수정한 뒤, 실행하면 이전에 보았던 인터리빙 패턴과 마찬가지로 이 새로운 버전의 subsetSum 모듈을 사용하면 CPU 바운드 작업을 실행하는 동안 이벤트 루프가 차단되지 않는다. 또한 부분 집합 합계 작업 두 개를 동시에 시작시키면 두 개의 서로 다른 프로세서를 최대한 활용하여 실행하도록 할 수 있다. 다만, 동시 처리를 2개의 프로세스로 제한했기 때문에 세 개의 작업을 동시 실행하려고 하면 마지막으로 시도했던 작업이 중단된다.
+</p>
+
+<p>
+    멀티 프로세스 패턴은 인터리빙 패턴보다 인터리빙 패턴보다 강력하고 유연하다. 그러나 단일 시스템에서 제공하는 자원의 양은 여전히 제한적이므로 확장성에 한계가 있다. 이 경우 대답은 여러 컴퓨터에 걸쳐 부하를 분산시키는 것이다.
+</p>
