@@ -343,3 +343,214 @@ http {
 <p>
     코드의 upstream nodejs_design_patterns_app 영역에서 네트워크 요청을 처리하는데 사용되는 백엔드 서버 목록을 정의한 다음 server 영역에서 proxy_pass를 지정한다. 이 지정문은 기본적으로 Nginx에게 정의한 서버 그룹에 요청을 전달하도록 한다.
 </p>
+
+### 2-4 서비스 레지스트리(service registry)
+
+<p>
+    최신 클라우드 기반 인프라의 한 가지 중요한 이점은 현재 또는 예측된 트래픽을 기반으로 어플리케이션의 용량을 동적으로 조정할 수 있다는 것이다. 이를 동적 스케일링(dynamic scaling)이라고 한다. 이러한 방식은 어플리케이션의 가용성과 응답성을 유지하면서 IT 이늪라의 비용을 엄청나게 줄일 수 있다.
+</p>
+
+<p>
+    해당 개념은 어플리케이션의 트래픽이 최고조에 달해 성능의 저하가 발생하면 증가된 부하에 대처하기 위해 새 서버가 자동으로 생성되며, 특정 시간 동안 일부 서버를 종료할 수도 있다. 이 메커니즘을 사용하면 로드 밸런서가 항상 서버가 작동하는 시간을 알기 위해, 현재 네트워크 토폴로지에 대해 최신 상태를 유지해야 한다. 이러한 문제를 해결하기 위한 일반적인 패턴은 실행중인 서버와 해당 서버가 제공하는 서비스를 추적하는 서비스 레지스트리라는 중앙 저장소를 사용한다.
+</p>
+
+![1](https://user-images.githubusercontent.com/38815618/106561831-c4596b80-656c-11eb-966a-a83e8a4b2616.PNG)
+
+<p>
+    위 아키텍처는 API와 WebAp 두 가지 서비스가 있다고 가정한다. 로드 밸런서는 엔드포인트인 /api에 도착하는 요청들을 API 서비스를 구현한 모든 서버에 분배하고, 나머지 요청들은 WebApp 서비스를 구현한 서버에 분산시킨다. 로드 밸런서는 레지스트리를 사용하여 서버 목록을 얻게 된다.
+</p>
+
+<p>
+    각 어플리케이션 인스턴스는 각자 온라인이 되는 순간에 자신을 서비스 레지스트리에 등록하고 중단될 때는 등록을 취소해야 한다. 이렇게 하면 로드 밸런서는 항상 네트워크에서 사용할 수 있는 서버 및 서비스에 대한 최신 정보를 가질 수 있다. 이 패턴은 로드 밸런싱 뿐만 아니라, 더 일반적으로는 서버에서 제공하느 서비스 유형을 분리하는 방법으로도 사용할 수 있다.
+</p>
+
+#### http-proxy와 consul을 사용한 동적 로드 밸런싱 구현
+
+<p>
+    Node.js 만을 사용하여 로드 밸런서를 구축하면 훨씬 더 많은 자유와 성능을 얻을 수 있으며, 서비스 레지스트리를 포함한 사용자 정의 로드 밸런싱 장치에 어떠한 유형의 패턴이나 알고리즘도 바로 구현할 수 있다. 다음 예제는 클러스터와 Nginx를 터스트하기 위해 사용한 것과 같은 간단한 HTTP 서버지만, 이번에는 각 서버가 시작하는 순간 서비스 레지스트리에 등록한다.
+</p>
+
+```javascript
+// app.js
+const http = require('http');
+const pid = process.pid;
+const consul = require('consul')();
+const portfinder = require('portfinder');
+const serviceType = process.argv[2];
+
+portfinder.getPort((err, port) => { // 1.
+    const serviceId = serviceType+port;
+    consul.agent.service.register({ // 2.
+        id: serviceId,
+        name: serviceType,
+        address: 'localhost',
+        port: port,
+        tags: [serviceType]
+    }, () => {
+
+        const unregisterService = (err) => { // 3.
+            consul.agent.service.deregister(serviceId, () => {
+                process.exit(err ? 1 : 0);
+            });
+        };
+
+        process.on('exit', unregisterService); // 4.
+        process.on('SIGINT', unregisterService);
+        process.on('uncaughtException', unregisterService);
+
+        http.createServer((req, res) => { // 5.
+            for (let i = 1e7; i > 0; i--) {}
+            console.log(`Handling request from ${pid}`);
+            res.end(`${serviceType} response from ${pid}\n`);
+        }).listen(port, () => {
+            console.log(`Started ${serviceType} (${pid}) on port ${port}`);
+        });
+    });
+});
+```
+
+- http-proxy: Node.js에 프록시와 로드 밸런서를 간단하게 생성할 수 있는 라이브러리
+- portfinder: 시스템의 빈 포트를 발견할 수 있는 라이브러리
+- consul: 서비스 등록을 허용하는 라이브러리
+
+1. 먼저 portfinder.getPort를 사용하여 시스템의 빈 포트를 찾는다(기본적으로 8000부터 검색).
+2. 다음으로 Consul 라이브러리를 사용하여 레지스트리에 새 서비스를 등록한다. 서비스 정의에는 id, name, address와 port, tag같은 일련의 속성이 필요하다. 이렇게 하면 cluster에서 사용할 수 있는 동일한 유형의 모든 서비스를 식별할 수 있다.
+3. 여기서 Consul에 방금 등록한 서비스를 제거할 수 있는 unregisterService라는 함수를 정의한다.
+4. unregisterService를 정리를 위한 함수로 사용하여 프로그램이 닫힐 때 서비스가 Consul에서 등록 해지되도록 한다.
+5. 마지막으로 portfinder가 발견한 포트에서 서비스를 위한 HTTP 서버를 시작한다.
+
+```javascript
+// loadBalancer.js - 1
+const routing = [
+  {
+    path: '/api',
+    service: 'api-service',
+    index: 0
+  },
+  {
+    path: '/',
+    service: 'webapp-service',
+    index: 0
+  }
+];
+```
+
+<p>
+    위의 코드는 먼저 uRL 경로를 서비스에 매핑하는 라우팅 테이블을 정의하였다. 라우팅 배열의 각 항목에는 매핑된 경로로 들어오는 요청을 처리하는데 사용되는 서비스가 포함되어 있다. index 속성은 지정된 서비스의 요청을 라운드 로빈하는데 사용된다.
+</p>
+
+```javascript
+// loadBalancer.js - 2
+const http = require('http');
+const httpProxy = require('http-proxy');
+const consul = require('consul')(); // 1.
+
+const proxy = httpProxy.createProxyServer({});
+http.createServer((req, res) => {
+    let route;
+    routing.some(entry => { // 2.
+        route = entry;
+        // route path를 시작하는지 체크
+        return req.url.indexOf(route.path) === 0;
+    });
+
+    consul.agent.service.list((err, services) => { // 3.
+        const servers = [];
+        Object.keys(services).filter(id => {
+            if (services[id].Tags.indexOf(route.service) > -1) {
+                servers.push(`http://${services[id].Address}:${services[id].Port}`)
+            }
+        });
+
+        if (!servers.length) {
+            res.writeHead(502);
+            return res.end('Bad gateway');
+        }
+
+        route.index = (route.index + 1) % servers.length; // 4.
+        proxy.web(req, res, {target: servers[route.index]});
+    });
+}).listen(8080, () => console.log('Load balancer started on port 8080'));
+```
+
+1. 레지스트리에 접근하기 위해 consul을 불러온다. 다음으로 http-proxy 객체를 인스턴스화하고 일반 웹 서버를 시작한다.
+2. 서버의 요청 핸들러에서 가장 먼저 수행해야 할 작업은 URL을 라우팅 테이블과 비교하는 것이다. 결과는 서비스 이름을 포함하는 기술자(descriptor)가 된다.
+3. Consul로부터 필요한 서비스가 구현된 서비스들의 목록을 얻는다. 만약 이 목록이 비어있으면 클라이언트에 에러를 반환한다. tag 속성을 사용하여 사용 가능한 모든 서비스에서 현재 서비스 유형을 구현한 서버의 주소를 찾는다.
+4. 끝으로 요청을 목적지로 라우팅한다. 라운드 로빈 방식에 따라 route.index를 목록의 다음 서버를 가리키도록 업데이트한다. 그런 다음 인덱스를 사용하여 목록에서 서버를 선택하여 요청 및 응답 개체와 함께 `proxy.web()`으로 전달한다. 그러면 선택한 서버로 요청이 전달된다.
+
+<p>
+    이 패턴의 장점은 즉각적이라는 것이다. 피룡에 따라 또는 일정에 따라 인프라를 동적으로 바로 확장할 수 있으며, 로드 밸런서는 별도의 추가 작업 없이 새로운 구성에 따라 자동으로 조정된다.
+</p>
+
+### 2-5 피어-투-피어 로드 밸런싱(peer-to-peer load balancing)
+
+<p>
+    역방향 프록시의 사용은 복잡한 내부 네트워크 아키텍쳐를 인터넷과 같은 공용 네트워크 영역에 공개하고자 할 때 거의 필수적이다. 복잡성을 숨기고 외부 어플리케이션이 쉽게 사용하고 참조할 수 있는 유일한 접근점을 제공한다. 그러나 내부용으로만 서비스를 확장해야 하는 경우 더 많은 유연성과 제어 기능을 제공할 수 있다.
+</p>
+
+<p>
+    이러한 기능을 구현하기 위해 서비스 B에 의존하는 서비스 A가 있다고 가정해보면, 서비스 B는 여러 컴퓨터에 걸쳐 확장되며 내부 네트워크에서만 사용할 수 있다. 지금까지 배웠던 것은 서비스 A가 서비스 B를 구현하는 모든 서버에 트래픽을 배분하는 역방향 프록시를 사용하여 서비스 B에 연결한다는 것이다.
+</p>
+
+<p>
+    이에 대안은 역방향 프록시를 제거하고 요청을 클라이언트에서 직접 배분하는 것이다. Service A는 Service B의 다양한 인스턴스 간의 연결에 대한 로드 밸런싱을 직접 담당한다. 이는 Service A가 Service B의 동작중인 서버에 대한 세부적인 정보를 알고 있고, 내부 네트워크에서 일반적으로 알려진 정보인 경우에만 가능하다. 이 접근 방식은 근본적으로 피어-투-피어 로드 밸런싱을 구현한다.
+</p>
+
+![2](https://user-images.githubusercontent.com/38815618/106561836-c58a9880-656c-11eb-89a5-342ba59f96cc.PNG)
+
+<p>
+    병목 현상이나 단일 접속점이 실패한 경우에 대한 걱정 없이 진정한 분산 통신을 가능하게 하는 매우 간단하고 효과적인 패턴이다. 또한 다음 이점이 있다.
+</p>
+
+- 네트워크 노드를 제거하여 인프라의 복잡성을 줄인다.
+- 더 적은 노드를 통해 메시지가 전달되기 때문에 더 빠른 통신이 가능하다.
+- 로드 밸런서가 처리할 수 있는 성능으로 인해 성능이 제한되지 않기 때문에 확장성이 좋다.
+
+<p>
+    반대로 역방향 프록시를 제거하면 실제로 기본 인프라의 복잡성이 노출된다. 또한 각 클라이언트는 로드 밸런싱 알고리즘을 구현하고 매일 변경될 수도 있는 인프라에 대한 정보를 최신 상태로 유지할 수 있어야 한다.
+</p>
+
+#### 여러 서버에 대해 요청을 분산할 수 있는 HTTP 클라이언트 구현
+
+```javascript
+// balanceRequest.js
+const http = require('http');
+const servers = [
+    {host: 'localhost', port: '8081'},
+    {host: 'localhost', port: '8082'}
+];
+
+let i = 0;
+
+module.exports = (options, callback) => {
+    i = (i + 1) % servers.length;
+    options.hostname = servers[i].host;
+    options.port = servers[i].port;
+    
+    return http.request(options, callback);
+};
+```
+
+<p>
+    위의 코드는 라운드 로빈 알고리즘을 사용하여 사용 가능한 서버 목록에서 선택한 서버에 맞도록 요청의 호스트 이름 및 포트를 재정의하도록 원래 http.request API를 래핑하였다. 그러면 래핑된 API를 다음과 같이 원활하게 사용할 수 있다.
+</p>
+
+```javascript
+// client.js
+const request = require('./balancedRequest');
+
+for (let i = 10; i >= 0; i--) {
+    request({method: 'GET', path: '/'}, res => {
+        let str = '';
+        res.on('data', chunk => {
+                str += chunk;
+        }).on('end', () => {
+            console.log(str)
+        });
+    }).end();
+}
+```
+
+<p>
+    코드를 실행하기 위해서는 제공된 샘플 서버의 인스턴스 두 개를 시작해야 한다. 어플리케이션을 실행하면 각 요청이 다른 서버로 전송되는 방식을 확인하여 이제 전용 역방향 프록시 없이도 로드 밸런싱을 수행할 수 있음을 확인할 수 있다.
+</p>
