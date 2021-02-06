@@ -1,27 +1,36 @@
-const WebSocketServer = require('ws').Server;
-const redis = require("redis");
-const redisSub = redis.createClient();
-const redisPub = redis.createClient();
+const level = require('level');
+const timestamp = require('monotonic-timestamp');
+const JSONStream = require('JSONStream');
+const amqp = require('amqplib');
+const db = level('./msgHistory');
 
-// 정적 파일을 서비스하는 서버
-const server = require('http').createServer(
-    require('ecstatic')({root: `${__dirname}/www`})
-);
+require('http').createServer((req, res) => {
+    res.writeHead(200);
+    db.createValueStream()
+        .pipe(JSONStream.stringify())
+        .pipe(res);
+}).listen(8090);
 
-const wss = new WebSocketServer({server: server});
-wss.on('connection', ws => {
-    console.log('Client connected');
-    ws.on('message', msg => {
-        console.log(`Message: ${msg}`);
-        redisPub.publish('chat_messages', msg);
-    });
-});
-
-redisSub.subscribe('chat_messages');
-redisSub.on('message', (channel, msg) => {
-    wss.clients.forEach((client) => {
-        client.send(msg);
-    });
-});
-
-server.listen(process.argv[2] || 8080);
+let channel, queue;
+amqp
+    .connect('amqp://localhost') // 1.
+    .then(conn => conn.createChannel())
+    .then(ch => {
+        channel = ch;
+        return channel.assertExchange('chat', 'fanout'); // 2.
+    })
+    .then(() => channel.assertQueue('chat_history')) // 3.
+    .then((q) => {
+        queue = q.queue;
+        return channel.bindQueue(queue, 'chat'); // 4.
+    })
+    .then(() => {
+        return channel.consume(queue, msg => { // 5.
+            const content = msg.content.toString();
+            console.log(`Saving message: ${content}`);
+            db.put(timestamp(), content, err => {
+                if (!err) channel.ack(msg);
+            });
+        });
+    })
+    .catch(err => console.log(err));
