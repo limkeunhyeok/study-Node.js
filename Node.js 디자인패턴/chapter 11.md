@@ -102,3 +102,145 @@
 - 단일 장애 지점의 제거
 - 브로커는 확장해야 하는 반면, 피어-투-피어 아키텍처에서는 단일 노드만 확장하면 된다.
 - 브로커 없이 메시지를 교환하면 전송 대기 시간을 크게 줄일 수 있다.
+
+## 2. 게시/구독 패턴
+
+<p>
+    이 패턴은 일련의 구독자가 특정 카테고리의 메시지를 수신하기 위해 구독을 등록한다. 반면 게시자는 모든 관련 구독자에게 배포되는 메시지를 생성한다.
+</p>
+
+![1](https://user-images.githubusercontent.com/38815618/107109097-a3508d80-6880-11eb-9099-d29217c596d2.PNG)
+
+<p>
+    pub/sub는 게시자가 메시지의 수신자가 누구인지 미리 알 필요가 없다. 특정 메시지를 받기 위해서는 구독자가 자신의 관심사를 등록해야 하므로 게시자는 알 수 없는 수의 수신자와 함께 작업할 수 있다. 즉, 게시/구독 패턴의 양쪽이 느슨하게 결합되어 있으므로 진화하는 분산 시스템의 노드를 통합하는데 이상적이다.
+</p>
+
+<p>
+    브로커가 존재하면 구독자가 메시지의 게시자인 노드를 알지 못해 브로커와만 상호작용하기 때문에 시스템 노드 간의 분리가 더욱 개선된다. 또한, 브로커는 메시지 큐 시스템을 제공하여 노드 간의 연결 문제가 있는 경우에도 안정적인 전달을 보장한다.
+</p>
+
+### 2-1 간단한 실시간 채팅 어플리케이션 만들기
+
+#### 서버 측 구현
+
+```javascript
+// app.js
+const WebSocketServer = require('ws').Server;
+
+// 정적 파일을 서비스하는 서버
+const server = require('http').createServer( // 1.
+    require('ecstatic')({root: `${__dirname}/www`})
+);
+
+const wss = new WebSocketServer({server: server}); // 2.
+wss.on('connection', ws => {
+    console.log('Client connected');
+    ws.on('message', msg => { // 3.
+        console.log(`Message: ${msg}`);
+        broadcast(msg);
+    });
+});
+
+function broadcast(msg) { // 4.
+    wss.clients.forEach(client => {
+        client.send(msg);
+    });
+}
+
+server.listen(process.argv[2] || 8080);
+```
+
+1. 먼저 HTTP 서버를 만들고 정적 파일을 제공하기 위해 ecstatic이라는 미들웨어를 추가한다. 이는 어플리케이션의 클라이언트에서 필요로 하는 리소스들을 제공하는데 필요하다.
+2. WebSocket 서버의 새 인스턴스를 만들고 이를 기존의 HTTP 서버에 연결한다. 그런 다음, 연결 이벤트에 대한 이벤트 리스너를 첨부하여 들어오는 WebSocket 연결에 대기한다.
+3. 새로운 클라이언트가 서버에 연결될 때마다 수신 메시지로 전달되는 메시지를 듣기 시작한다. 새 메시지가 도착하면 연결된 모든 사용자에게 전파한다.
+4. `broadcast()` 함수는 연결된 모든 클라이언트에 대해 `send()` 함수를 호출하는 단순한 반복을 수행한다.
+
+#### 클라이언트 측 구현
+
+```html
+<!DOCTYPE html>
+<html>
+    <head>
+        <script>
+            var ws = new WebSocket('ws://' + window.document.location.host);
+            ws.onmessage = function(message) {
+                var msgDiv = document.createElement('div');
+                msgDiv.innerHTML = message.data;
+                document.getElementById('messages').appendChild(msgDiv);
+            };
+        
+            function sendMessage() {
+                var message = document.getElementById('msgBox').value;
+                ws.send(message);
+            }
+        </script>
+    </head>
+    <body>
+        Messages:
+        <div id='messages'></div>
+        <input type='text' placeholder='Send a message' id='msgBox'>
+        <input type='button' onclick='sendMessage()' value='Send'>
+    </body>
+</html>
+```
+
+#### 채팅 어플리케이션 실행 및 확장
+
+<p>
+    한 인스턴스에서 채팅 메시지를 보낼 때, 메시지를 로컬로 브로드캐스트하여 특정 서버에 연결된 클라이언트들에게만 메시지를 전파한다. 실제로 두 서버는 서로 통신하지 않는다. 앞으로 이 두 서버를 통합해야 한다.
+</p>
+
+### 2-2 메시지 브로커로 Redis 사용하기
+
+<p>
+    Redis는 메시지 브로커라기 보다는 데이터베이스이다. 하지만 많은 기능 중에서 중앙 집중식 게시/구독 패턴을 구현하도록 특별하게 설계된 명령 쌍이 존재한다.
+</p>
+
+<p>
+    Redis는 캐싱 서버나 세션 저장소와 같은 기존 인프라에서 사용할 수 있다. 속도와 유연성은 분산 시스템에서 데이터를 공유하기 위한 매우 보편적인 선택 기준이다. 따라서 프로젝트에서 구독/게시를 위한 브로커가 필요할 경우, 가장 간단하고 즉각적인 선택은 Redis 자체를 재사용하여 전용 메시지 브로커를 설치하고 유지 관리할 필요가 없도록 하는 것이다.
+</p>
+
+<p>
+    앞으로 예제는 Redis를 메시지 브로커로 사용하여 채팅 서버를 통합한다. 각 인스턴스는 클라이언트에서 수신한 메시지를 브로커에 게시하는 동시에 다른 서버 인스턴스에서 오는 모든 메시지를 구독한다. 아키텍처의 각 서버는 구독자이면서 게시자이다.
+</p>
+
+![2](https://user-images.githubusercontent.com/38815618/107109098-a481ba80-6880-11eb-863d-22b144a1058c.PNG)
+
+1. 메시지는 웹 페이지의 텍스트 상자에 입력되어 연결된 채팅 서버의 인스턴스로 전송된다.
+2. 그런 다음 메시지가 브로커에 게시된다.
+3. 브로커는 모든 가입자에게 메시지를 발송한다. 예제의 아키텍청에서는 채팅 서버의 모든 인스턴스가 대상이다.
+4. 각 인스턴스에서 메시지는 연결된 모든 클라이언트에 전파된다.
+
+```javascript
+const WebSocketServer = require('ws').Server;
+const redis = require("redis"); // 1.
+const redisSub = redis.createClient();
+const redisPub = redis.createClient();
+
+// 정적 파일을 서비스하는 서버
+const server = require('http').createServer(
+    require('ecstatic')({root: `${__dirname}/www`})
+);
+
+const wss = new WebSocketServer({server: server});
+wss.on('connection', ws => {
+    console.log('Client connected');
+    ws.on('message', msg => {
+        console.log(`Message: ${msg}`);
+        redisPub.publish('chat_messages', msg); // 2.
+    });
+});
+
+redisSub.subscribe('chat_messages'); // 3.
+redisSub.on('message', (channel, msg) => {
+    wss.clients.forEach((client) => {
+        client.send(msg);
+    });
+});
+
+server.listen(process.argv[2] || 8080);
+```
+
+1. Node.js 어플리케이션을 Redis 서버에 연결하기 위해 사용 가능한 모든 Redis 명령을 지원하는 완전한 클라이언트인 Redis 패키지를 사용한다. 다음으로 두 개의 다른 연결을 인스턴스화 한다. 하나는 채널을 구독하고, 다른 하나는 메시지를 게시하는데 사용한다. Redis에서는 연결이 구독자 모드로 설정되면 구독과 관련된 명령만 사용할 수 있기 때문에 이 작업이 필요하다. 즉, 메시지 게시를 위해 두 번째 연결이 필요하다.
+2. 연결된 클라이언트에서 새 메시지를 받으면 chat_messages 채널에 메시지를 게시한다. 서버가 동일한 채널에 가입되어 있어, Redis를 통해 다시 돌아올 것이기 때문에 메시지를 클라이언트에게 직접 브로드캐스트 하지 않는다.
+3. 서버는 chat_messages 채널에도 가입해야 하므로, 현재 서버 또는 다른 대화 서버에서 해당 채널로 게시된 모든 메시지를 수신하도록 리스너를 등록한다. 메시지가 수신되면 현재 WebSocket 서버에 연결된 모든 클라이언트에 메시지를 브로드캐스트 한다.

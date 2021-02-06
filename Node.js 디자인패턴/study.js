@@ -1,33 +1,27 @@
-const EventEmitter = require('events').EventEmitter;
+const WebSocketServer = require('ws').Server;
+const redis = require("redis");
+const redisSub = redis.createClient();
+const redisPub = redis.createClient();
 
-class SubsetSum extends EventEmitter {
-    constructor(sum, set) {
-        super();
-        this.sum = sum;
-        this.set = set;
-        this.totalSubsets = 0;
-    }
+// 정적 파일을 서비스하는 서버
+const server = require('http').createServer(
+    require('ecstatic')({root: `${__dirname}/www`})
+);
 
-    _combine(set, subset) {
-        for(let i = 0; i < set.length; i++) {
-            let newSubset = subset.concat(set[i]);
-            this._combine(set.slice(i + 1), newSubset);
-            this._processSubset(newSubset);
-        }
-    }
+const wss = new WebSocketServer({server: server});
+wss.on('connection', ws => {
+    console.log('Client connected');
+    ws.on('message', msg => {
+        console.log(`Message: ${msg}`);
+        redisPub.publish('chat_messages', msg);
+    });
+});
 
-    _processSubset(subset) {
-        console.log('Subset', ++this.totalSubsets, subset);
-        const res = subset.reduce((prev, item) => (prev + item), 0);
-        if(res == this.sum) {
-            this.emit('match', subset);
-        }
-    }
+redisSub.subscribe('chat_messages');
+redisSub.on('message', (channel, msg) => {
+    wss.clients.forEach((client) => {
+        client.send(msg);
+    });
+});
 
-    start() {
-        this._combine(this.set, []);
-        this.emit('end');
-    }
-}
-
-module.exports = SubsetSum;
+server.listen(process.argv[2] || 8080);
