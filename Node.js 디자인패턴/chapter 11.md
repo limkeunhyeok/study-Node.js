@@ -598,3 +598,134 @@ sink.on('message', buffer => {
 <p>
     싱크는 매우 기본적인 결과 수집기로 단순히 작업자에게서 받은 메시지를 콘솔에 출력한다. 결과 수집자가 아키텍처의 영구 노드이기 때문에 작업자들의 PUSH 소켓에 명시적으로 연결하는 대신, PULL 소켓을 바인드하는 것은 유의해야 한다.
 </p>
+
+### 3-2 AMQP의 파이프라인과 경쟁 소비자
+
+#### 점대점(point-to-point) 통신 및 경쟁 소비자
+
+<p>
+    AMQP와 같은 시스템을 사용하여 파이프라인과 작업 배분 패턴을 구현하려면 각 메시지가 오직 한 소비자에만 수신된다는 보장이 있어야 하지만, 교환기가 잠재적으로 하나 이상의 큐에 바인딩 될 수 있는 경우는 이를 보장할 수 없다. 이에 대한 해결책은 교환기를 우회하여 목적지 큐에 직접 메시지를 전송하는 것이다. 이 방법을 사용하면 하나의 대기열만 메시지를 수신할 수 있으며, 이러한 통신 패턴을 점대점(point-to-point)이라고 한다.
+</p>
+
+<p>
+    다수의 소비자가 동일한 큐에서 듣고 있을 때, 메시지가 균일하게 전달되어 팬아웃 배분이 구현된다. 메시지 브로커의 영역에서 이를 경쟁 소비자(competing consumers) 패턴으로 알려져 있다.
+</p>
+
+#### AMQP를 사용한 해시 크래커 구현
+
+![1](https://user-images.githubusercontent.com/38815618/107527664-611aa980-6bfc-11eb-9ac1-9549d24841fb.PNG)
+
+<p>
+    여러 작업자에게 여러 작업들을 배포하려면 단일 대기열을 사용해야 한다. 위의 그림에서 이를 작업 대기열(Jobs queue)이라고 한다. 작업 대기열의 다른 한쪽 끝에는 경쟁 소비자로서 일련의 작업자들이 있다. 각각의 작업자는 서로 다른 메시지를 큐로부터 수신한다. 결과적으로 여러 작업이 서로 다른 작업자에 전달되어 동시에 실행된다.
+</p>
+
+<p>
+    작업자가 생성한 결과는 결과 대기열(results queue)이라고 하는 다른 대기열에 게시한 다음, 결과 수집자(results collector)에 의해 소비된다. 전체 아키텍처에서 어떠한 교환기(Exchange)도 사용하지 않는다.
+</p>
+
+##### 공급자(producer) 구현하기
+
+```javascript
+const amqp = require('amqplib');
+// ...
+
+let connection, channel;
+amqp
+    .connect('amqp://localhost')
+    .then(conn => {
+        connection = conn;
+        return conn.createChannel();
+    })
+    .then(ch => {
+        channel = ch;
+        produce();
+    })
+    .catch(err => console.log(err))
+;
+
+function produce() {
+    let batch = [];
+    variationsStream(alphabet, maxLength)
+        .on('data', combination => {
+            batch.push(combination);
+            if (batch.length === batchSize) {
+                const msg = {searchHash: searchHash, variations: batch};
+                channel.sendToQueue('jobs_queue', 
+                    new Buffer(JSON.stringify(msg)));
+                batch = [];
+            }
+        })
+        // ...
+    ;
+}
+```
+
+<p>
+    위의 코드에서 볼 수 있듯이, 어떠한 교환기나 바인딩 없이 AMQP 통신을 훨씬 간단하게 설정할 수 있다. 또한, 메시지를 게시하는 것만 관심이 있기 때문에 대기열도 필요하지 않다. 가장 중요한 부분은 `channel.sendToQueue()` API이다. 이 API는 대기열에 직접 메시지를 전달하는 역활을 담당한다. 이 경우 교환기나 라우팅을 거치지 않는다.
+</p>
+
+##### 작업자 구현하기
+
+```javascript
+const amqp = require('amqplib');
+const crypto = require('crypto');
+
+let channel, queue;
+amqp
+    .connect('amqp://localhost')
+    .then(conn => conn.createChannel())
+    .then(ch => {
+        channel = ch;
+        return channel.assertQueue('jobs_queue');
+    })
+    .then(q => {
+        queue = q.queue;
+        consume();
+    })
+    .catch(err => console.log(err.stack))
+;
+
+function consume() {
+    channel.consume(queue, function(msg) {
+        const data = JSON.parse(msg.content.toString());
+        const variations = data.variations;
+        variations.forEach( word => {
+            console.log(`Processing: ${word}`);
+            const shasum = crypto.createHash('sha1');
+            shasum.update(word);
+            const digest = shasum.digest('hex');
+            if (digest === data.searchHash) {
+                console.log(`Found! => ${word}`);
+                channel.sendToQueue('results_queue', 
+                    new Buffer(`Found! ${digest} => ${word}`));
+            }
+        });
+        channel.ack(msg);
+    });
+}
+```
+
+<p>
+    새로운 작업자는 메시지 교환과 관련된 부분을 제외하고 이전 섹션에서 구현한 zmq와 매우 유사하다. 위의 코드에서 먼저 jobs_queue가 있는지 확인한 다음, `channel.consume()`을 사용하여 들어오는 작업들을 기다린다. 그런 다음 매칭이 발견될 때마다 다시 점대점 통신을 사용하여 results_queue를 통해 수집자(collector)에 결과를 보낸다. 여러 작업자가 시작된 경우 모두 동일한 대기열에서 수신 대기하므로 메시지의 부하가 분산된다.
+</p>
+
+##### 결과 수집자(result collector) 구현하기
+
+```javascript
+// ...
+    .then(ch => {
+        channel = ch;
+        return channel.assertQueue('results_queue');
+    })
+    .then(q => {
+        queue = q.queue;
+        channel.consume(queue, msg => {
+            console.log('Message from worker: ', msg.content.toString());
+        });
+    })
+// ...
+```
+
+<p>
+    결과 수집자도 수신된 모든 메시지를 콘솔에 인쇄하는 간단한 모듈이다.
+</p>
