@@ -460,3 +460,141 @@ amqp
 <p>
     채팅 서버는 영구 구독자일 필요는 없으며 설정 및 패러다임으로도 충분하다. 따라서 대기열을 생성할 때 {exclusive:true} 옵션을 전달하면, 대기열의 범위가 현재 연결로 지정되므로 채팅 서버가 종료되는 즉시 삭제된다. 새 메시지를 게시하는 것은 단순히 대상 교환기(chat)와 라우팅 키를 지정하면 된다. 예제는 팬아웃 교환기를 사용하기 때문에 이 경우에는 비어('')있다.
 </p>
+
+## 3. 파이프라인 및 작업 배포 패턴
+
+![1](https://user-images.githubusercontent.com/38815618/107515853-f0b95b80-6bee-11eb-9c52-3bc89dd997eb.PNG)
+
+<p>
+    위 그림에서 여러 작업자가 동일한 작업을 받는 것을 절대 원치 않기 때문에 이러한 유형의 어플리케이션에서 게시/구독 패턴은 적합하지 않다. 대신 필요한 것은 각 메시지를 다른 소비자에게 보내는 로드 밸런서와 유사한 메시지 배포 패턴이다. 메시징 시스템 용어로, 이 패턴은 경쟁 소비자(competing consumers), 팬아웃 배포(fanout distribution) 또는 환풍기(ventilator) 패턴으로 알려져 있이다.
+</p>
+
+<p>
+    HTTP 로드 밸런서와의 한 가지 중요한 차이점은 여기서는 소비자의 역할이 보다 활발하다는 것이다. 대부분의 경우 소비자와 연결되는 것은 생산자가 아니라 소비자 자신이 새로운 작업을 얻기 위해 작업 생산자나 작업 대기열에 연결된다. 이는 생산자를 수정하거나 서비스 레지스트리를 채택하지 않고도 작업자의 수를 원활하게 늘릴 수 있다는 점에서 확장 가능한 시스템으로 큰 장점이다.
+</p>
+
+<p>
+    일반적인 메시징 시스템에서 반드시 생산자와 작업자간에 요청/응답 통신을 할 필요는 없다. 대신 대부분의 경우 선호되는 접근 방식은 일방적인 비동기 통신을 사용하는 것인데, 이를 병렬 처리와 확장성이 향상된다. 이러한 아키텍처에서 메시지는 잠재적으로 항상 한 방향으로만 전달되어 아래의 그림에 표시된 파이프라인을 생성할 수 있다.
+</p>
+
+![2](https://user-images.githubusercontent.com/38815618/107515854-f151f200-6bee-11eb-8740-78517ac66794.PNG)
+
+<p>
+    파이프라인을 사용하면 동기식 요청/응답 통신에 대한 부담 없이 매우 복잡한 프로세스가 가능한 아키텍처를 구축할 수 있으므로 대기 시간이 짧아지고 처리량이 높아지는 경우가 많다. 위 그림에서 메시지를 일련의 작업자들에 배포하고(팬아웃) 다른 처리 장치로 전달한 다음, 일반적으로 싱크로 표현되는 단일 노드로 취합하는(팬인) 방법을 볼 수 있다.
+</p>
+
+### 3-1 ØMQ 팬아웃/팬인 패턴
+
+#### PUSH/PULL 소켓
+
+<p>
+    PUSH 소켓은 메시지를 전송하기 위한 것이고 PULL 소켓은 수신용이다.
+</p>
+
+- 둘 다 연결 모드 혹은 바인드 모드에서 동작할 수 있다. 즉, PUSH 소켓을 만들어 PULL 소켓에서 들어오는 연결을 청취하는 로컬 포트에 바인딩하거나 PULL 소켓에서 PUSH 소켓의 연결을 수신하도록 할 수 있다. 메시지는 항상 PUSH에서 PULL까지 동일한 방향으로 이동한다. 유일하게 다른 부분은 연결은 초기화하는 부분이다. 바인드 모드는 작업 생성자와 싱크 같은 영구적인 노드에 최적의 솔루션이지만, 연결 모드는 작업자와 같은 임시노드에 적합하다. 따라서 내구성이 높은 노드에 영향을 주지 않고 일시적인 노드의 수를 임의로 변경할 수 있다.
+- 하나의 PUSH 소켓에 여러 개의 PULL 소켓이 연결되어 있으면 메시지가 모든 PULL 소켓에 균등하게 배분된다. 실제로는 부하가 분산된다(peer-to-peer load balancing). 한편, 여러 PUSH 소켓에서 메시지를 수신하는 PULL 소켓은 공정한 대기열 시스템을 사용하여 메시지들을 처리한다. 즉, 인바운드 메시지에 라운드 로빈을 적용하여 모든 소스에서 메시지들을 균일하게 소비한다.
+- 연결된 PULL 소켓이 없는 PUSH 소켓을 통해 전송된 메시지들은 사라지지 않는다. 대신 노드가 온라인 상태가 되어 메시지를 가져가기 시작할 때까지 생성자의 큐에 대기한다.
+
+#### ØMQ를 사용한 분산된 해시섬 크래커 만들기
+
+<p>
+    해시섬 크래커(hashsum cracker)는 주어진 알파벳 문자의 가능한 모든 변형에 주어진 해시(MD5, SHA1 등)를 일치시키기 위해 전수 공격(brute-force) 기술을 사용하는 시스템이다. 이는 병렬 파이프라인의 강력함을 보여주는 예제로 완벽한 과도한 병렬 작업 부하(embarrassingly parallel workload) 문제라도고 한다.
+</p>
+
+![3](https://user-images.githubusercontent.com/38815618/107515849-f020c500-6bee-11eb-9c51-0a866738bbc3.PNG)
+
+<p>
+    아키텍처에는 주어진 알파벳의 가능한 모든 변형을 생성하고 일련의 작업자(worker)들에게 배포하는 변형 생성자(ventilator)가 있다. 작업자들은 주어진 변형에 대한 해시섬을 계산하고 이를 입력으로 제공된 해시섬에 일치하는지 비교한다. 일치하는 항목이 존재하면 결과가 결과 수집 노드로 전송된다.
+</p>
+
+<p>
+    아키텍처의 영구 노드는 변형 생성자 및 결과 수집자이고, 이에 반해 임시 노드들은 작업자들이다. 이는 각 작업자가 PULL 소켓을 공급기에 연결하고 PUSH 소켓을 결과 수집자에 연결한다는 것을 의미한다. 공급기 또는 결과 수집자에서 매개 변수를 변경하지 않고 원하는 수의 작업자들을 시작하고 중지할 수 있다.
+</p>
+
+##### 변형 생성자(ventilator) 구현
+
+```javascript
+const zmq = require('zmq');
+const variationsStream = require('variations-stream');
+const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+const batchSize = 10000;
+const maxLength = process.argv[2];
+const searchHash = process.argv[3];
+
+const ventilator = zmq.socket('push'); // 1.
+ventilator.bindSync("tcp://*:5016");
+
+let batch = [];
+variationsStream(alphabet, maxLength)
+    .on('data', combination => {
+        batch.push(combination);
+        if (batch.length === batchSize) { // 2.
+            const msg = {searchHash: searchHash, variations: batch};
+            ventilator.send(JSON.stringify(msg));
+            batch = [];
+        }
+    })
+    .on('end', () => {
+        // 나머지 조합을 전달
+        const msg = {searchHash: searchHash, variations: batch};
+        ventilator.send(JSON.stringify(msg));
+    })
+;
+```
+
+1. 먼저 PUSH 소켓을 만들고 이를 로컬 포트 5000번에 바인딩한다. 작업자의 PULL 소켓이 연결되어 작업을 수신한다.
+2. 생성된 변형 항목들을 각각 10,000개의 항목으로 그룹화한 다음, 일치시킬 해시와 확인할 단어 묶음이 포함된 메시지를 작성한다. 이는 본질적으로 작업자들이 받을 작업 대상이다. 공급기 소켓을 통해 `send()`를 호출하면 메시지를 라운드 로빈 방식의 배포에 따라 다음으로 사용 가능한 작업자에게 전달한다.
+
+##### 작업자 구현
+
+```javascript
+const zmq = require('zmq');
+const crypto = require('crypto');
+const fromVentilator = zmq.socket('pull');
+const toSink = zmq.socket('push');
+
+fromVentilator.connect('tcp://localhost:5016');
+toSink.connect('tcp://localhost:5017');
+
+fromVentilator.on('message', buffer => {
+    const msg = JSON.parse(buffer);
+    const variations = msg.variations;
+    variations.forEach( word => {
+        console.log(`Processing: ${word}`);
+        const shasum = crypto.createHash('sha1');
+        shasum.update(word);
+        const digest = shasum.digest('hex');
+        if (digest === msg.searchHash) {
+            console.log(`Found! => ${word}`);
+            toSink.send(`Found! ${digest} => ${word}`);
+        }
+    });
+});
+```
+
+<p>
+    작업자는 아키텍처의 임시 노드를 나타내므로 소켓은 들어오는 연결을 수신하는 것이 아니라 원격지의 노드에 연결되어야 한다. 작업자에게 다음 두 개의 소켓을 제공한다.
+</p>
+
+- 공급기에 연결되어 작업을 수신하는 PULL 소켓
+- 결과를 전달하기 위해 결과 수집자(sink)에 연결되는 PUSH 소켓
+
+<p>
+    받은 각 메시지에 대해 포함된 단어 묶음을 반복한 후 각 단어에 대해 SHA1 체크섬을 계산하고 이를 메시지와 함께 전달된 searchHash와 비교한다. 일치하는 항목이 발견되면 그 결과를 결과 수집자로 전달한다.
+</p>
+
+##### 결과 수집자 구현
+
+```javascript
+const zmq  = require('zmq');
+const sink = zmq.socket('pull');
+sink.bindSync("tcp://*:5017");
+
+sink.on('message', buffer => {
+    console.log('Message from worker: ', buffer.toString());
+});
+```
+
+<p>
+    싱크는 매우 기본적인 결과 수집기로 단순히 작업자에게서 받은 메시지를 콘솔에 출력한다. 결과 수집자가 아키텍처의 영구 노드이기 때문에 작업자들의 PUSH 소켓에 명시적으로 연결하는 대신, PULL 소켓을 바인드하는 것은 유의해야 한다.
+</p>
