@@ -729,3 +729,138 @@ function consume() {
 <p>
     결과 수집자도 수신된 모든 메시지를 콘솔에 인쇄하는 간단한 모듈이다.
 </p>
+
+## 4. 요청(request)/응답(reply) 패턴
+
+### 4-1 상관 관계 식별자
+
+<p>
+    상관 관계 식별자(correlation identifier)은 단방향 채널 위에 요청/응답의 추상화를 만들기 위한 기본적인 블록을 나타낸다. 패턴은 각 요청에 식별자를 표시한 다음, 수신자가 응답할 때 이를 첨부한다. 이렇게 하면 요청한 발신자가 두 메시지를 연관시키고 응답을 알맞은 핸들러에 반환할 수 있다. 언제든지 메시지가 원하는 방향으로 이동할 수 있어 단방향 비동기 채널이 가진 문제를 우아하게 해결할 수 있다.
+</p>
+
+![1](https://user-images.githubusercontent.com/38815618/107882414-7fe6ac00-6f2c-11eb-9ae4-ecd0473532e7.PNG)
+
+<p>
+    위 그림은 관계 ID를 사용하여 각 요청을 보낸 다음, 다른 순서로 수신하더라도 각 응답을 올바른 요청과 일치시키는 방법을 보여준다.
+</p>
+
+#### 상관 관계 식별자를 사용한 요청/응답 추상화 구현
+
+<p>
+    단순 채널 범주에는 Websocket을 찾을 수 있다. 웹 사이트는 서버와 브라우저 사이에 점대점 연결을 설정하고 메시지는 양방향으로 이동할 수 있다. 또 다른 예로는 `child_process.fork()`를 사용하여 자식 프로세스가 생성될 때 생성되는 채널이다. 부모 프로세스는 자식 프로세스와만 연결하며 메시지는 모든 방향으로 이동이 가능하다.
+</p>
+
+<p>
+    다음 어플리케이션의 계획은 부모 프로세스와 자식 프로세스 간에 생성된 채널을 감싸지 위해 추상화를 작성하는 것이다. 이러한 추상화는 각 요청에 관계 ID를 자동으로 표시한 후, 들어오는 응답의 ID를 대기중인 요청 핸들러 목록과 일치시켜 요청/응답 통신을 제공한다.
+</p>
+
+<p>
+    부모 프로세스는 다음 두 가지 요소를 사용하여 자식 프로세스와 함께 채널에 접근할 수 있다.
+</p>
+
+- `child.send(message)`
+- `child.on('message', callback)`
+
+<p>
+    비슷한 방법으로 자식 프로세스는 다음을 사용하여 채널에 접근할 수 있다.
+</p>
+
+- `process.send(message)`
+- `process.on('message', callback)`
+
+<p>
+    이는 부모가 사용할 수 있는 채널의 인터페이스가 자식에서 사용할 수 있는 인터페이스와 동일한 것이라는 것을 의미한다. 이렇게 하면 일반적인 추상화를 만들 수 있으므로 요청을 채널의 양쪽 끝에서 보낼 수 있게 된다.
+</p>
+
+##### 요청(request) 추상화하기
+
+```javascript
+// request.js
+const uuid = require('node-uuid');
+
+module.exports = channel => {
+    const idToCallbackMap = {}; // 1.
+    
+    channel.on('message', message => { // 2.
+        const handler = idToCallbackMap[message.inReplyTo];
+        if(handler) {
+            handler(message.data);
+        }
+    });
+    
+    return function sendRequest(req, callback) { // 3.
+        const correlationId = uuid.v4();
+        idToCallbackMap[correlationId] = callback;
+        channel.send({
+            type: 'request',
+            data: req,
+            id: correlationId
+        });
+    };
+};
+```
+
+1. 먼저 request 함수를 중심으로 작성된 클로저이다. 이 패턴의 마법은 요청과 응답 핸들러 간의 상호 관계를 저장하는 idToCallbackMap 변수에 있다.
+2. 팩토리가 호출되자마자 하는 일은 들어오는 메시지를 기다리는 것이다. 메시지의 관계 ID가 idToCallbackMap 변수에 있는 ID 중 하나와 일치하면 방금 응답을 받은 것이므로 관련된 응답 핸들러에 대한 참조를 얻어 메시지에 포함된 데이터를 가지고 호출한다.
+3. 마지막으로 새로운 요청을 보내는데 사용할 함수를 반환한다. 이 작업은 node-uuid 패키지를 사용하여 관계 ID를 생성한 후 관계 ID와 요청 데이터를 관계 ID와 메시지의 유형을 지정할 수 있는 봉투에 담는 것이다.
+
+##### 응답(reply) 추상화하기
+
+```javascript
+// reply.js
+module.exports = channel =>
+{
+    return function registerHandler(handler) {
+        channel.on('message', message => {
+            if (message.type !== 'request') return;
+                handler(message.data, reply => {
+                    channel.send({
+                    type: 'response',
+                    data: reply,
+                    inReplyTo: message.id
+                });
+            });
+        });
+    };
+};
+```
+
+1. 들어오는 요청을 수신하기 시작하고 메시지를 받으면 메시지의 데이터와 콜백 함수를 전달하여 핸들러를 즉시 호출함으로써 핸들러로부터 응답을 수집한다.
+2. 핸들러가 작업을 완료하면 제공된 콜백을 호출하여 응답을 반환한다. 그런 다음 요청의 관계 ID를 첨부하여 봉투를 만든 후 모든 것을 채널로 다시 돌려준다.
+
+##### 요청/응답 전체 사이클
+
+```javascript
+// replier.js
+const reply = require('./reply')(process);
+
+reply((req, cb) => {
+    setTimeout(() => {
+        cb({sum: req.a + req.b});
+    }, req.delay);
+});
+```
+
+<p>
+   replier는 단순히 받은 두 숫자의 합을 계산하여 일정 시간 지연 후에 결과를 반환한다. 이렇게 하면 응답 순서가 요청을 보낸 순서와 다를 수 있으며, 패턴이 작동하는지 확인할 수 있게 된다.
+</p>
+
+```javascript
+// requestor.js
+const replier = require('child_process')
+                .fork(`${__dirname}/replier.js`);
+const request = require('./request')(replier);
+
+request({a: 1, b: 2, delay: 500}, res => {
+    console.log('1 + 2 = ', res.sum);
+    replier.disconnect();
+});
+
+request({a: 6, b: 1, delay: 100}, res => {
+    console.log('6 + 1 = ', res.sum);
+});
+```
+
+<p>
+    요청자(requestor)는 응답자(replier)를 시작한 다음, 요청을 요청 추상화(request abstraction)에 전달한다. 그런 다음 몇 가지 샘플 요청을 실행하고 수신한 응답과의 상관 관계가 올바른지 확인한다.
+</p>
