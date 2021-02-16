@@ -864,3 +864,151 @@ request({a: 6, b: 1, delay: 100}, res => {
 <p>
     요청자(requestor)는 응답자(replier)를 시작한 다음, 요청을 요청 추상화(request abstraction)에 전달한다. 그런 다음 몇 가지 샘플 요청을 실행하고 수신한 응답과의 상관 관계가 올바른지 확인한다.
 </p>
+
+### 4-2 반송 주소(return address)
+
+<p>
+    상관 관계 식별자는 단방향 채널 위에 요청/응답 통신을 생성하기 위한 기본적인 패턴이다. 그러나 메시징 아키텍처에 둘 이상의 채널이나 큐가 있거나 요청자가 둘 이상일 경우에는 이것만으로 충분하지 않다. 이러한 상황에서는 관계 ID 이외에도 응답자가 요청의 원래 발신자에게 응답을 보낼 수 있는 정보인 반송 주소도 알아야 할 필요가 있다.
+</p>
+
+#### AMQP에서 반송 주소 패턴 구현
+
+<p>
+    AMQP에서 반송 주소는 requestor가 들어오는 응답을 수신 대기하는 대기열이다. 응답은 하나의 요청자만 수신하기 때문에 대기열은 비공개이며, 서로 다른 소비자 간에는 공유되지 않는 것이 중요하다. 이러한 속성으로 인해 요청자와 해당 응답자를 연결 범위로 하는 임시적인 큐가 필요하며, 응답자가 응답을 전할 수 있도록 해당 반송 큐와 점대점 통신을 설정해야 한다는 것을 알 수 있다.
+</p>
+
+![1](https://user-images.githubusercontent.com/38815618/108056078-2bf6d700-7094-11eb-9720-c41459935a45.PNG)
+
+<p>
+    AMQP를 기반으로 한 요청/응답 패턴을 만들려면 메시지 등록 정보에 응답 대기열의 이름을 지정하면 된다. 이 방법으로 응답자는 응답 메시지가 전달되어야 하는 위치를 알 수 있다.
+</p>
+
+##### 요청 추상화 구현
+
+<p>
+    AMQP 위에 요청/응답 추상화를 위해 RabbitMQ를 브로커로 사용한다. 먼저 응답을 저장항 큐를 생성한다.
+</p>
+
+```javascript
+// amqpRequest.js
+channel.assertQueue('', {exclusive: true});
+```
+
+<p>
+    큐를 만들 때는 이름을 지정하지 않는다. 즉, 임의의 대기열이 생성된다. 이외에도 만들어진 큐는 배타적인데, 이는 활성화된 AMQP 연결에 바인딩되고 연결이 닫히면 대기열이 삭제된다는 의미이다. 여러 대기열에 라우팅이나 분배가 필요가 없기 때문에 대기열을 교환기에 바인드할 필요가 없다. 이는 메시지가 응답 대기열에 직접 전달되어야 함을 의미한다.
+</p>
+
+```javascript
+class AMQPRequest {
+    // ...
+    request(queue, message, callback) {
+        const id = uuid.v4();
+        this.idToCallbackMap[id] = callback;
+        this.channel.sendToQueue(queue, new Buffer(JSON.stringify(message)),
+            {correlationId: id, replyTo: this.replyQueue}
+        );
+    }
+}
+```
+
+<p>
+    `request()` 메소드는 요청 대기열의 이름과 보낼 메시지를 인자로 허용한다. 관계 ID를 생성하고 이를 콜백 함수에 연결해야 하며, 마지막으로 correlationId 및 replyTo 속성에 메타 데이터를 정의하여 메시지를 보낸다. `Channel.publish()` 대신에 `channel.sendToQueue()` API를 사용하여 메시지를 보내는 부분이 중요하다. 이는 교환기를 사용하여 게시/구독 방식의 배포를 구현하지 않고, 목적지 큐로 직접 전달되는 보다 기본적인 점대점 방식의 전달을 사용하기 때문이다.
+</p>
+
+```javascript
+_listenForResponses() {
+    return this.channel.consume(this.replyQueue, msg => {
+        const correlationId = msg.properties.correlationId;
+        const handler = this.idToCallbackMap[correlationId];
+        if (handler) {
+            handler(JSON.parse(msg.content.toString()));
+        }
+    }, {noAck: true});
+}
+```
+
+<p>
+    위의 코드에서 응답을 수신하기 위해 명시적으로 작성한 대기 열에서 메시지를 수신한 다음, 각 수신 메시지에 대해 관계 ID를 읽고 응답 대기 중인 핸들러의 목록과 비교한다. 핸들러가 있으면 응답 메시지를 인자로 하여 핸들러를 호출하면 된다.
+</p>
+
+##### 응답 추상화 구현
+
+<p>
+    응답 추상화는 들어오는 요청을 받을 대기열을 만들어야 한다. 예제는 이 목적을 위해 간단한 영구 대기열을 사용할 수 있다.
+</p>
+
+```javascript
+class AMQPReply {
+    // ...
+
+    handleRequest(handler) {
+        return this.channel.consume(this.queue, msg => {
+            const content = JSON.parse(msg.content.toString());
+            handler(content, reply => {
+                this.channel.sendToQueue(
+                    msg.properties.replyTo,
+                    new Buffer(JSON.stringify(reply)),
+                    {correlationId: msg.properties.correlationId}
+                );
+                this.channel.ack(msg);
+            });
+        });
+    }
+}
+```
+
+<p>
+    응답을 보낼 때, `channel.sendToQueue()`를 사용하여 메시지의 replyTo 속성에 지정된 대기열에 메시지를 직접 게시한다. amqpReply 객체의 또 다른 중요한 작업은 응답에 correlationId를 설정하여 수신자가 보류중인 요청 목록과 메시지를 일치시킬 수 있도록 하는 것이다.
+</p>
+
+##### 요청자 및 응답자 구현
+
+```javascript
+// replier.js
+const Reply = require('./amqpReply');
+const reply = Reply('requests_queue');
+
+reply.initialize().then(() => {
+    reply.handleRequest((req, cb) => {
+        console.log('Request received', req);
+        cb({sum: req.a + req.b});
+    });
+});
+```
+
+<p>
+    구축한 추상체들을 통해 관계 ID와 반송 주소를 처리하는 모든 메커니즘을 블랙박스화할 수 있다는 것을 볼 수 있다. 앞으로 할 일은 요청을 받을 큐의 이름을 지정하여 새로운 reply 객체를 초기화하는 것뿐이다. 나머지 코드는 매우 간단하다. 샘플 응답자는 입력으로 받은 두 숫자의 합을 계산하고 제공된 콜백을 사용하여 결과를 내보낸다.
+</p>
+
+```javascript
+// requestor.js
+const req = require('./amqpRequest')();
+
+req.initialize().then(() => {
+    for (let i = 100; i > 0; i--) {
+        sendRandomRequest();
+    }
+});
+
+function sendRandomRequest() {
+    const a = Math.round(Math.random() * 100);
+    const b = Math.round(Math.random() * 100);
+    req.request('requests_queue', {a: a, b: b}, 
+        res => {
+            console.log(`${a} + ${b} = ${res.sum}`);
+        }
+    );
+}
+```
+
+<p>
+    샘플 requestor는 100개의 임의의 요청을 requests_queue라는 대기열로 보낸다. 이 경우에도 예제는 추상체가 비동기식 요청/응답 패턴의 모든 세부사항을 블랙박스화하고 완벽하게 작업하고 있는 것을 볼 수 있다.
+</p>
+
+<p>
+    응답자가 처음으로 시작되면 영구 큐가 생성된다. 따라서 응답자의 실행을 중지했다가 응답자를 다시 실행해도 요청이 손실되지 않는다. replier가 다시 시작될 때까지 모든 메시지가 대기열에 저장된다.
+</p>
+
+<p>
+    AMQP를 사용함으로써 얻을 수 있는 또 다른 좋은 기능은 응답자를 바로 확장할 수 있다는 것이다. 이를 테스트하기 위해 요청자의 두 개 이상의 복제 인스턴스를 시작하고 두 인스턴스 간에 요청이 로드 밸런싱되는 것을 확인할 수 있다. 이는 요청자가 시작할 때마다 동일한 영구 대기열에 리스너로 연결되기 때문에, 결과적으로 브로커는 대기열의 모든 사용자에 걸쳐 메시지의 로드 밸런싱을 하게 된다.
+</p>
